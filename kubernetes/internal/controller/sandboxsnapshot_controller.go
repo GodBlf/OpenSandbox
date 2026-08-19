@@ -19,6 +19,7 @@ import (
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
@@ -51,8 +52,8 @@ const (
 	// ContainerdSocketPath is the default containerd socket path
 	ContainerdSocketPath = "/var/run/containerd/containerd.sock"
 
-	// ContainerdFIFODir is shared with the host so nerdctl exec's I/O FIFOs are
-	// visible to the host-side containerd shim.
+	// ContainerdFIFODir is available to image-committer implementations that
+	// use containerd task exec with FIFO-backed process I/O.
 	ContainerdFIFODir = "/run/containerd/fifo"
 
 	// LabelSandboxSnapshotName is the label key for sandbox snapshot name
@@ -68,10 +69,10 @@ type SandboxSnapshotReconciler struct {
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
 
-	// ImageCommitterImage is the image for image-committer (uses nerdctl to commit/push container images)
+	// ImageCommitterImage is the image used for commit and unpause Jobs.
 	ImageCommitterImage string
 
-	// ContainerdSocketPath is containerd socket path for image-committer (nerdctl --address)
+	// ContainerdSocketPath is the host containerd socket mounted into image-committer Jobs.
 	ContainerdSocketPath string
 
 	// CommitJobTimeout is the timeout for commit jobs (default: 10 minutes)
@@ -80,15 +81,22 @@ type SandboxSnapshotReconciler struct {
 	// SnapshotRegistry is the OCI registry for snapshot images (from Controller Manager startup params)
 	SnapshotRegistry string
 
-	// SnapshotPushSecret is the K8s Secret name for pushing to registry (from Controller Manager startup params)
+	// SnapshotPushSecret is the K8s Secret name for pushing and deleting snapshot images (from Controller Manager startup params)
 	SnapshotPushSecret string
 
 	// ImageCommitterPullSecret is the K8s Secret name used to pull the image-committer image in commit Jobs.
 	// Required when imageCommitterImage lives in a private registry.
 	ImageCommitterPullSecret string
 
+	// ImageCommitterPodTemplate overlays operator-controlled commit Job Pod settings.
+	ImageCommitterPodTemplate *corev1.PodTemplateSpec
+
 	// SnapshotRegistryInsecure controls whether image-committer uses insecure registry mode.
 	SnapshotRegistryInsecure bool
+
+	// registryImageDeleter performs remote manifest cleanup. When nil, the
+	// reconciler uses remoteRegistryImageDeleter.
+	registryImageDeleter registryImageDeleter
 }
 
 // +kubebuilder:rbac:groups=sandbox.opensandbox.io,resources=sandboxsnapshots,verbs=get;list;watch;create;update;patch;delete
