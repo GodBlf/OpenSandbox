@@ -28,7 +28,13 @@ from opensandbox.exceptions import (
     SandboxReadyTimeoutException,
 )
 from opensandbox.models.diagnostics import DiagnosticContent
-from opensandbox.models.sandboxes import NetworkPolicy, NetworkRule, SandboxEndpoint
+from opensandbox.models.sandboxes import (
+    LifecycleHook,
+    NetworkPolicy,
+    NetworkRule,
+    SandboxEndpoint,
+    SandboxLifecycle,
+)
 from opensandbox.sandbox import Sandbox
 
 
@@ -157,6 +163,41 @@ async def test_check_ready_succeeds_after_retries_without_real_sleep(monkeypatch
 
     await sbx.check_ready(timeout=timedelta(seconds=1), polling_interval=timedelta(seconds=0.01))
     assert calls["n"] == 3
+
+
+@pytest.mark.asyncio
+async def test_check_ready_limits_final_sleep_to_remaining_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = [0.0]
+    sleep_calls: list[float] = []
+
+    def _monotonic() -> float:
+        return clock[0]
+
+    async def _sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+        clock[0] += seconds
+
+    async def _always_false(_: Sandbox) -> bool:
+        return False
+
+    monkeypatch.setattr("opensandbox.sandbox.time.time", _monotonic)
+    monkeypatch.setattr("opensandbox.sandbox.time.monotonic", _monotonic)
+    monkeypatch.setattr("opensandbox.sandbox.asyncio.sleep", _sleep)
+    sbx = _make_sandbox(
+        health_service=_HealthServiceStub(),
+        sandbox_service=_SandboxServiceStub(),
+        custom_health_check=_always_false,
+    )
+
+    with pytest.raises(SandboxReadyTimeoutException):
+        await sbx.check_ready(
+            timeout=timedelta(milliseconds=10),
+            polling_interval=timedelta(milliseconds=200),
+        )
+
+    assert sleep_calls == [0.01]
 
 
 @pytest.mark.asyncio
@@ -690,6 +731,7 @@ async def test_create_passes_new_signature_keywords_even_when_unused(
             snapshot_id=None,
             credential_proxy=None,
             resource_requests=None,
+            lifecycle=None,
         ):
             assert spec is not None
             assert entrypoint is not None
@@ -703,6 +745,9 @@ async def test_create_passes_new_signature_keywords_even_when_unused(
             assert platform is None
             assert secure_access is False
             assert snapshot_id is None
+            assert lifecycle is not None
+            assert lifecycle.pre_start is not None
+            assert lifecycle.pre_start.command == ["/opt/hooks/restore.sh"]
             return _CreateResponse()
 
         async def get_sandbox_endpoint(self, _sandbox_id, port: int, _use_server_proxy: bool = False):
@@ -746,6 +791,9 @@ async def test_create_passes_new_signature_keywords_even_when_unused(
             defaultAction="deny",
             egress=[NetworkRule(action="allow", target="pypi.org")],
         ),
+        lifecycle=SandboxLifecycle(
+            preStart=LifecycleHook(command=["/opt/hooks/restore.sh"])
+        ),
         skip_health_check=True,
     )
 
@@ -777,6 +825,7 @@ async def test_create_restore_from_snapshot_passes_snapshot_id(
             snapshot_id=None,
             credential_proxy=None,
             resource_requests=None,
+            lifecycle=None,
         ):
             self.create_calls.append((spec, entrypoint))
             assert isinstance(env, dict)
@@ -855,6 +904,7 @@ async def test_create_restore_from_snapshot_preserves_custom_entrypoint(
             snapshot_id=None,
             credential_proxy=None,
             resource_requests=None,
+            lifecycle=None,
         ):
             assert isinstance(env, dict)
             assert isinstance(metadata, dict)

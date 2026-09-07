@@ -26,31 +26,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
 	"github.com/alibaba/opensandbox/egress/pkg/constants"
-	inttelemetry "github.com/alibaba/opensandbox/internal/telemetry"
 )
-
-func TestAppendMetricAttrsFromKeyValuePairs(t *testing.T) {
-	var base []attribute.KeyValue
-	out := inttelemetry.AppendAttrsFromKeyValuePairs(base, "a=b")
-	assert.Len(t, out, 1)
-	assert.Equal(t, "a", string(out[0].Key))
-	assert.Equal(t, "b", out[0].Value.AsString())
-
-	out = inttelemetry.AppendAttrsFromKeyValuePairs(nil, "  foo=bar  , baz=qux ")
-	assert.Len(t, out, 2)
-	assert.Equal(t, "foo", string(out[0].Key))
-	assert.Equal(t, "bar", out[0].Value.AsString())
-	assert.Equal(t, "baz", string(out[1].Key))
-	assert.Equal(t, "qux", out[1].Value.AsString())
-
-	out = inttelemetry.AppendAttrsFromKeyValuePairs(nil, "k=v=x")
-	assert.Len(t, out, 1)
-	assert.Equal(t, "k", string(out[0].Key))
-	assert.Equal(t, "v=x", out[0].Value.AsString())
-
-	out = inttelemetry.AppendAttrsFromKeyValuePairs(nil, "novalue=,=bad,nokv")
-	assert.Len(t, out, 0)
-}
 
 // The instrument records seconds, so it needs boundaries on a seconds ladder. With the
 // SDK default (the spec's millisecond ladder) every realistic DNS latency collapses into
@@ -127,6 +103,9 @@ func TestFailureCountersCarryBoundedAttributeWithoutSharingState(t *testing.T) {
 	RecordDNSQueryFailed(DNSFailureRcode)
 	RecordDNSQueryFailed(DNSFailureUpstreamError)
 	RecordNftablesUpdateFailed(NftOpDynamicAdd)
+	RecordDNSReplyFailed(DNSReplyStageAnswer)
+	RecordDNSReplyFailed(DNSReplyStageAnswer)
+	RecordDNSReplyFailed(DNSReplyStageDeny)
 
 	var rm metricdata.ResourceMetrics
 	require.NoError(t, reader.Collect(context.Background(), &rm))
@@ -136,6 +115,12 @@ func TestFailureCountersCarryBoundedAttributeWithoutSharingState(t *testing.T) {
 		DNSFailureUpstreamError: 2,
 		DNSFailureRcode:         1,
 	}, dns, "each reason must be its own stream")
+
+	reply := counterByAttr(t, &rm, "egress.dns.reply.failed_total", "stage")
+	assert.Equal(t, map[string]int64{
+		DNSReplyStageAnswer: 2,
+		DNSReplyStageDeny:   1,
+	}, reply, "each stage must be its own stream")
 
 	nft := counterByAttr(t, &rm, "egress.nftables.updates.failed_total", "operation")
 	assert.Equal(t, map[string]int64{NftOpDynamicAdd: 1}, nft)
