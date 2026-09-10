@@ -1,0 +1,209 @@
+# Copyright 2026 Alibaba Group Holding Ltd.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Regression repro: renew intent dropped after server restart.
+
+Post-restart the HTTPTenantProvider has no tenant information in memory (only control-plane
+API calls populate it). Background renew consumers have no tenant ContextVar, so
+sandbox lookup falls back to ``_find_sandbox_namespace`` -> no tenant information ->
+default namespace -> 404, and ``AccessRenewController._try_renew_sync`` swallows
+the HTTPException silently: the in-use sandbox is never renewed.
+"""
+
+import logging
+from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock
+
+from kubernetes.client import ApiException
+
+from opensandbox_server.integrations.renew_intent.controller import AccessRenewController
+from opensandbox_server.integrations.renew_intent.logutil import RENEW_SOURCE_REDIS_QUEUE
+
+TENANT_NS = "tenant-alpha"
+
+
+def _stage_running_sandbox(k8s_service, mock_workload) -> datetime:
+    """Make the sandbox resolvable and renewable, but only in TENANT_NS."""
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
+
+    def get_workload(sandbox_id, namespace):
+        return mock_workload if namespace == TENANT_NS else None
+
+    k8s_service.workload_provider.get_workload.side_effect = get_workload
+    # Cluster-wide label lookup: resolves the sandbox even
+    # when no tenant information is cached.
+    k8s_service.workload_provider.list_workloads_all_namespaces.return_value = [
+        {"metadata": {"namespace": TENANT_NS}}
+    ]
+    k8s_service.workload_provider.get_status.return_value = {
+        "state": "Running",
+        "reason": "",
+        "message": "Running",
+        "last_transition_at": datetime.now(timezone.utc),
+    }
+    k8s_service.workload_provider.get_endpoint_info.return_value = "10.0.0.1:8080"
+    k8s_service.workload_provider.get_expiration.return_value = expires_at
+    k8s_service.workload_provider.update_expiration.return_value = None
+    return expires_at
+
+
+def _no_tenant_info_provider() -> MagicMock:
+    """HTTPTenantProvider right after a server restart: no tenants known."""
+    provider = MagicMock()
+    provider.list_tenants.return_value = []
+    return provider
+
+
+def test_redis_renew_intent_survives_no_tenant_info(k8s_service, mock_workload):
+    _stage_running_sandbox(k8s_service, mock_workload)
+    k8s_service.set_tenant_provider(_no_tenant_info_provider())
+
+    extension_service = MagicMock()
+    extension_service.get_access_renew_extend_seconds.return_value = 600
+
+    controller = AccessRenewController(k8s_service, extension_service)
+    ok = controller.attempt_renew_sync("test-sandbox-123", source=RENEW_SOURCE_REDIS_QUEUE)
+
+    assert ok is True, "renew intent was silently dropped: sandbox unfindable with no tenant information"
+    k8s_service.workload_provider.update_expiration.assert_called_once()
+
+
+class _CapturingHandler(logging.Handler):
+    """Collect records directly on the target logger.
+
+    The app's dictConfig disables propagation and strips pre-existing root
+    handlers, so pytest's caplog cannot see app records; attach our own.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.WARNING)
+        self.records: list = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+def test_redis_renew_intent_warns_when_sandbox_unfindable(k8s_service, mock_workload):
+    """Silent drop: unfindable sandbox must log a WARNING, not return quietly."""
+    k8s_service.set_tenant_provider(_no_tenant_info_provider())
+    k8s_service.workload_provider.get_workload.return_value = None
+    k8s_service.workload_provider.list_workloads_all_namespaces.return_value = []
+
+    handler = _CapturingHandler()
+    controller_logger = logging.getLogger(
+        "opensandbox_server.integrations.renew_intent.controller"
+    )
+    controller_logger.addHandler(handler)
+    try:
+        controller = AccessRenewController(k8s_service, MagicMock())
+        ok = controller.attempt_renew_sync("missing-sandbox", source=RENEW_SOURCE_REDIS_QUEUE)
+    finally:
+        controller_logger.removeHandler(handler)
+
+    assert ok is False
+    messages = [record.getMessage() for record in handler.records]
+    warnings = [m for m in messages if "get_sandbox_failed" in m]
+    assert warnings, "expected a WARNING with skip_reason=get_sandbox_failed"
+    assert "missing-sandbox" in warnings[0]
+
+
+def test_cluster_lookup_forbidden_opens_backoff_window(k8s_service, mock_workload, monkeypatch):
+    """A 403 (missing RBAC) opens a backoff window: one warning, no retry inside it."""
+    calls = {"n": 0}
+
+    def forbidden(*args, **kwargs):
+        calls["n"] += 1
+        raise ApiException(status=403, reason="Forbidden")
+
+    k8s_service.workload_provider.list_workloads_all_namespaces.side_effect = forbidden
+
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(
+        "opensandbox_server.services.k8s.kubernetes_service.time.monotonic",
+        lambda: clock["now"],
+    )
+    handler = _CapturingHandler()
+    ks_logger = logging.getLogger("opensandbox_server.services.k8s.kubernetes_service")
+    ks_logger.addHandler(handler)
+    try:
+        assert k8s_service._find_sandbox_namespace_cluster_wide("sbx-rbac") is None
+        assert calls["n"] == 1
+        # Inside the backoff window the cluster LIST is suppressed entirely.
+        clock["now"] = 1000.0 + 599.0
+        assert k8s_service._find_sandbox_namespace_cluster_wide("sbx-rbac") is None
+        assert calls["n"] == 1
+        # Past the window the LIST is retried (and re-denied, warning again).
+        clock["now"] = 1000.0 + 601.0
+        assert k8s_service._find_sandbox_namespace_cluster_wide("sbx-rbac") is None
+        assert calls["n"] == 2
+    finally:
+        ks_logger.removeHandler(handler)
+
+    warnings = [record.getMessage() for record in handler.records]
+    assert any("denied" in message for message in warnings), (
+        "expected an actionable warning when the cluster-wide lookup is denied"
+    )
+
+
+def test_cluster_lookup_transient_error_keeps_retrying(k8s_service, mock_workload):
+    """Non-403 failures are transient: no backoff window, the next intent retries the LIST."""
+
+    calls = {"n": 0}
+
+    def server_error(*args, **kwargs):
+        calls["n"] += 1
+        raise ApiException(status=500, reason="Internal Server Error")
+
+    k8s_service.workload_provider.list_workloads_all_namespaces.side_effect = server_error
+
+    assert k8s_service._find_sandbox_namespace_cluster_wide("sbx-flaky") is None
+    assert k8s_service._find_sandbox_namespace_cluster_wide("sbx-flaky") is None
+    assert calls["n"] == 2, "a transient 5xx must not suppress the next lookup"
+
+
+def test_namespace_resolution_memoized_within_attempt(k8s_service, mock_workload):
+    """One execution flow resolves the same id several times; the cluster LIST runs once.
+
+    The memo is per-context and guarded by sandbox id, so each test's unique
+    id starts from a clean slot.
+    """
+    k8s_service.set_tenant_provider(_no_tenant_info_provider())
+    k8s_service.workload_provider.get_workload.return_value = None
+    k8s_service.workload_provider.list_workloads_all_namespaces.return_value = [
+        {"metadata": {"namespace": TENANT_NS}}
+    ]
+
+    for _ in range(3):  # get_sandbox / extend-seconds / renew_expiration
+        assert k8s_service._resolve_namespace_for_lookup("memo-sbx") == TENANT_NS
+    assert k8s_service.workload_provider.list_workloads_all_namespaces.call_count == 1
+
+    # A different id is not served by the memo of the previous id.
+    assert k8s_service._resolve_namespace_for_lookup("memo-other") == TENANT_NS
+    assert k8s_service.workload_provider.list_workloads_all_namespaces.call_count == 2
+
+
+def test_renew_attempt_issues_single_cluster_list(k8s_service, mock_workload):
+    """End-to-end: a full renew attempt with no tenant information triggers exactly one cluster LIST."""
+    _stage_running_sandbox(k8s_service, mock_workload)
+    k8s_service.set_tenant_provider(_no_tenant_info_provider())
+
+    extension_service = MagicMock()
+    extension_service.get_access_renew_extend_seconds.return_value = 600
+
+    controller = AccessRenewController(k8s_service, extension_service)
+    ok = controller.attempt_renew_sync("memo-attempt-sbx", source=RENEW_SOURCE_REDIS_QUEUE)
+
+    assert ok is True
+    k8s_service.workload_provider.update_expiration.assert_called_once()
+    assert k8s_service.workload_provider.list_workloads_all_namespaces.call_count == 1

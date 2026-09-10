@@ -57,10 +57,26 @@ class AccessRenewController:
         self._sandbox_service = sandbox_service
         self._extension_service = extension_service
 
+    def _log_http_renew_failure(
+        self, sandbox_id: str, source: str, skip_reason: str, exc: HTTPException
+    ) -> None:
+        """Log one renew step that failed with an HTTPException."""
+        detail_s = _http_detail_str(exc.detail)
+        line, ex = renew_bundle(
+            event=RENEW_EVENT_FAILED,
+            source=source,
+            sandbox_id=sandbox_id,
+            skip_reason=skip_reason,
+            http_detail=detail_s,
+            http_status=getattr(exc, "status_code", None),
+        )
+        logger.warning(f"renew_intent {line} detail={detail_s}", extra=ex)
+
     def _try_renew_sync(self, sandbox_id: str, *, source: str) -> bool:
         try:
             sandbox = self._sandbox_service.get_sandbox(sandbox_id)
-        except HTTPException:
+        except HTTPException as exc:
+            self._log_http_renew_failure(sandbox_id, source, "get_sandbox_failed", exc)
             return False
 
         if sandbox.status.state.lower() != "running":
@@ -85,16 +101,9 @@ class AccessRenewController:
         try:
             self._sandbox_service.renew_expiration(sandbox_id, req)
         except HTTPException as exc:
-            detail_s = _http_detail_str(exc.detail)
-            line, ex = renew_bundle(
-                event=RENEW_EVENT_FAILED,
-                source=source,
-                sandbox_id=sandbox_id,
-                skip_reason="renew_expiration_rejected",
-                http_detail=detail_s,
-                http_status=getattr(exc, "status_code", None),
+            self._log_http_renew_failure(
+                sandbox_id, source, "renew_expiration_rejected", exc
             )
-            logger.warning(f"renew_intent {line} detail={detail_s}", extra=ex)
             return False
         except Exception as exc:
             line, ex = renew_bundle(

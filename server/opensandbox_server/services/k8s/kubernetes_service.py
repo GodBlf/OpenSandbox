@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 
 from fastapi import HTTPException, status
+from kubernetes.client import ApiException
 
 from opensandbox_server.extensions import (
     apply_access_renew_extend_seconds_to_mapping,
@@ -105,10 +106,19 @@ from opensandbox_server.services.k8s.client import (
 )
 from opensandbox_server.services.k8s.provider_factory import create_workload_provider
 from opensandbox_server.services.snapshot_restore import resolve_sandbox_image_from_request
-from opensandbox_server.tenants.context import get_current_tenant
+from opensandbox_server.tenants.context import (
+    get_current_tenant,
+    get_resolved_sandbox_ns,
+    remember_resolved_sandbox_ns,
+)
 from opensandbox_server.tenants.provider import TenantProvider
 
 logger = logging.getLogger(__name__)
+
+# A 403 on the cluster-wide LIST means the service account lacks RBAC list
+# permission; that is a deployment property no retry fixes within a window
+# this short, so back off flat (not exponential) and say so once per window.
+_CLUSTER_LOOKUP_FORBIDDEN_BACKOFF_SECONDS = 600.0
 
 
 def _is_namespace_not_found(exc: Exception) -> bool:
@@ -139,6 +149,10 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
         self.namespace = self.app_config.kubernetes.namespace
         self.execd_image = runtime_config.execd_image
         self._tenant_provider: Optional[TenantProvider] = None
+        # Monotonic timestamp of the last RBAC-forbidden cluster-wide lookup;
+        # lookups are skipped until the backoff window elapses. Thread-race
+        # tolerant: a stale read costs at most one extra denied LIST.
+        self._cluster_lookup_forbidden_monotonic: Optional[float] = None
 
         try:
             self.k8s_client = K8sClient(self.app_config.kubernetes)
@@ -210,19 +224,78 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
                 except Exception:
                     continue
 
+        return self._find_sandbox_namespace_cluster_wide(sandbox_id)
+
+    def _find_sandbox_namespace_cluster_wide(self, sandbox_id: str) -> Optional[str]:
+        """Locate a sandbox by its id label across all namespaces.
+
+        Heals the window after a restart when no tenant information is
+        cached. Requires cluster-wide list permission; a 403 opens a backoff
+        window during which lookups degrade to "not found" (skipped, with
+        one warning per window).
+        """
+        last_forbidden = self._cluster_lookup_forbidden_monotonic
+        if (
+            last_forbidden is not None
+            and time.monotonic() - last_forbidden
+            < _CLUSTER_LOOKUP_FORBIDDEN_BACKOFF_SECONDS
+        ):
+            return None
+        try:
+            selector = f"{SANDBOX_ID_LABEL}={sandbox_id}"
+            workloads = self.workload_provider.list_workloads_all_namespaces(selector)
+            for workload in workloads:
+                namespace = (workload.get("metadata") or {}).get("namespace")
+                if namespace:
+                    return namespace
+        except ApiException as exc:
+            if exc.status == 403:
+                # Cluster-wide list permission is a deployment property;
+                # re-asking per intent only re-denies.
+                self._cluster_lookup_forbidden_monotonic = time.monotonic()
+                logger.warning(
+                    "cluster-wide sandbox lookup denied (missing RBAC list "
+                    "permission for the service account?); backing off %.0fs; "
+                    "renew intents for sandboxes outside namespace %s will be "
+                    "skipped until access is granted",
+                    _CLUSTER_LOOKUP_FORBIDDEN_BACKOFF_SECONDS,
+                    self.namespace,
+                )
+            else:
+                logger.debug(
+                    "cluster-wide sandbox lookup failed for %s",
+                    sandbox_id,
+                    exc_info=True,
+                )
+            return None
+        except Exception:
+            logger.debug(
+                "cluster-wide sandbox lookup failed for %s",
+                sandbox_id,
+                exc_info=True,
+            )
+            return None
         return None
 
     def _resolve_namespace_for_lookup(self, sandbox_id: str) -> str:
         """Resolve namespace with cross-namespace fallback for background tasks.
 
         When ContextVar has no tenant (renew workers, proxy path), try to
-        locate the sandbox across all known namespaces.
+        locate the sandbox across all known namespaces. A namespace resolved
+        earlier in the same execution flow (e.g. the earlier steps of one
+        renew attempt) is memoized so each step pays for the lookup once.
         """
         tenant = get_current_tenant()
         if tenant:
             return tenant.namespace
+        memo = get_resolved_sandbox_ns(sandbox_id)
+        if memo:
+            return memo
         found = self._find_sandbox_namespace(sandbox_id)
-        return found if found else self.namespace
+        if found:
+            remember_resolved_sandbox_ns(sandbox_id, found)
+            return found
+        return self.namespace
 
     async def _wait_for_sandbox_ready(
         self,
