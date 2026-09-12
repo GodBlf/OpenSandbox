@@ -108,6 +108,7 @@ from opensandbox_server.services.k8s.provider_factory import create_workload_pro
 from opensandbox_server.services.snapshot_restore import resolve_sandbox_image_from_request
 from opensandbox_server.tenants.context import (
     get_current_tenant,
+    get_observed_namespace,
     get_resolved_sandbox_ns,
     remember_resolved_sandbox_ns,
 )
@@ -212,6 +213,20 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
             return self.namespace
 
         if self._tenant_provider is not None:
+            # Namespace observed by ingress at observed_at (renew-intent
+            # payload). First-hand but possibly stale by processing time:
+            # try it before the tenant scan, and only trust it when a
+            # workload actually exists there — otherwise fall through.
+            observed_ns = get_observed_namespace()
+            if observed_ns and observed_ns != self.namespace:
+                try:
+                    workload = self.workload_provider.get_workload(
+                        sandbox_id=sandbox_id, namespace=observed_ns
+                    )
+                    if workload:
+                        return observed_ns
+                except Exception:
+                    pass
             for entry in self._tenant_provider.list_tenants():
                 if entry.namespace == self.namespace:
                     continue

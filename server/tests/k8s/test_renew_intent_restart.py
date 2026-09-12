@@ -282,3 +282,84 @@ def test_cluster_lookup_with_duplicate_matches_is_rejected(k8s_service, mock_wor
     assert any("matched 2 namespaces" in message for message in messages), (
         "expected an ambiguity warning instead of an arbitrary pick"
     )
+
+
+def _run_queue_intent(controller: AccessRenewController, sandbox_id: str, namespace: str) -> None:
+    """Deliver one intent the way the Redis consumer does (public path)."""
+    import asyncio
+
+    from opensandbox_server.integrations.renew_intent.intent import RenewIntent
+
+    intent = RenewIntent(
+        sandbox_id=sandbox_id,
+        observed_at=datetime.now(timezone.utc),
+        port=8080,
+        request_uri="/localtest",
+        namespace=namespace,
+    )
+    asyncio.run(controller.process_intent_after_lock(intent))
+
+
+def test_observed_namespace_resolves_without_scan_or_list(k8s_service, mock_workload):
+    """The queue payload carries the namespace ingress observed; a hit must
+    skip tenant scan and cluster LIST entirely: one namespaced GET is the
+    whole resolution."""
+    _stage_running_sandbox(k8s_service, mock_workload, namespace="ingress-said-ns")
+    k8s_service.set_tenant_provider(_no_tenant_info_provider())
+
+    extension_service = MagicMock()
+    extension_service.get_access_renew_extend_seconds.return_value = 600
+    controller = AccessRenewController(k8s_service, extension_service)
+    _run_queue_intent(controller, "observed-sbx", namespace="ingress-said-ns")
+
+    k8s_service.workload_provider.update_expiration.assert_called_once()
+    # No tenant scan, no cluster-wide LIST: the observed-namespace GET
+    # resolved it.
+    k8s_service._tenant_provider.list_tenants.assert_not_called()
+    k8s_service.workload_provider.list_workloads_all_namespaces.assert_not_called()
+
+
+def test_stale_observed_namespace_falls_back_to_cluster_list(k8s_service, mock_workload):
+    """A stale observed namespace (sandbox moved since ingress served it)
+    must not strand the intent: miss there, then the cluster LIST finds the
+    new home."""
+    _stage_running_sandbox(k8s_service, mock_workload)
+    k8s_service.set_tenant_provider(_no_tenant_info_provider())
+
+    extension_service = MagicMock()
+    extension_service.get_access_renew_extend_seconds.return_value = 600
+    controller = AccessRenewController(k8s_service, extension_service)
+    _run_queue_intent(controller, "stale-observed-sbx", namespace="sandbox-old-home")
+
+    k8s_service.workload_provider.update_expiration.assert_called_once()
+    # The observed namespace was tried (one GET in the old home) and the
+    # cluster LIST picked up the fallback: exactly one LIST, not one per
+    # lookup step.
+    tried_namespaces = {
+        call.kwargs.get("namespace")
+        for call in k8s_service.workload_provider.get_workload.call_args_list
+    }
+    assert "sandbox-old-home" in tried_namespaces
+    assert k8s_service.workload_provider.list_workloads_all_namespaces.call_count == 1
+
+
+def test_single_tenant_ignores_observed_namespace(k8s_service, mock_workload):
+    """Single-tenant mode ignores the observed namespace: same rule as the
+    cluster LIST — the server never resolves beyond its configured namespace."""
+    from opensandbox_server.tenants.context import set_observed_namespace
+
+    k8s_service.workload_provider.get_workload.return_value = None
+    try:
+        set_observed_namespace("attacker-ns")
+        assert k8s_service._find_sandbox_namespace("foreign-sbx") is None
+        assert k8s_service._resolve_namespace_for_lookup("foreign-sbx") == k8s_service.namespace
+    finally:
+        set_observed_namespace(None)
+
+    # Only the configured namespace was ever probed.
+    probed = {
+        call.kwargs.get("namespace")
+        for call in k8s_service.workload_provider.get_workload.call_args_list
+    }
+    assert probed == {k8s_service.namespace}
+    k8s_service.workload_provider.list_workloads_all_namespaces.assert_not_called()

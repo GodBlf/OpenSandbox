@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from fastapi import HTTPException
 
@@ -32,7 +32,7 @@ from opensandbox_server.integrations.renew_intent.logutil import (
     RENEW_SOURCE_SERVER_PROXY,
     renew_bundle,
 )
-from opensandbox_server.tenants.context import reset_resolved_sandbox_ns
+from opensandbox_server.tenants.context import reset_resolved_sandbox_ns, set_observed_namespace
 
 if TYPE_CHECKING:
     from opensandbox_server.services.extension_service import ExtensionService
@@ -73,10 +73,15 @@ class AccessRenewController:
         )
         logger.warning(f"renew_intent {line} detail={detail_s}", extra=ex)
 
-    def _try_renew_sync(self, sandbox_id: str, *, source: str) -> bool:
+    def _try_renew_sync(
+        self, sandbox_id: str, *, source: str, namespace: Optional[str] = None
+    ) -> bool:
         # Namespace resolution is memoized per attempt; a fresh attempt must
         # not see the previous attempt's result (the sandbox may have moved).
         reset_resolved_sandbox_ns()
+        # Namespace observed by ingress (queue source only): published for
+        # the lookup, scoped to this attempt like the memo above.
+        set_observed_namespace(namespace)
         try:
             sandbox = self._sandbox_service.get_sandbox(sandbox_id)
         except HTTPException as exc:
@@ -134,9 +139,13 @@ class AccessRenewController:
         """Run gates + renew (sync)."""
         return self._try_renew_sync(sandbox_id, source=source)
 
-    async def renew_after_gates(self, sandbox_id: str, *, source: str) -> None:
+    async def renew_after_gates(
+        self, sandbox_id: str, *, source: str, namespace: Optional[str] = None
+    ) -> None:
         """Run renew in a worker thread (caller holds per-sandbox serialization)."""
-        await asyncio.to_thread(self._try_renew_sync, sandbox_id, source=source)
+        await asyncio.to_thread(self._try_renew_sync, sandbox_id, source=source, namespace=namespace)
 
     async def process_intent_after_lock(self, intent: RenewIntent) -> None:
-        await self.renew_after_gates(intent.sandbox_id, source=RENEW_SOURCE_REDIS_QUEUE)
+        await self.renew_after_gates(
+            intent.sandbox_id, source=RENEW_SOURCE_REDIS_QUEUE, namespace=intent.namespace
+        )

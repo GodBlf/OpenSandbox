@@ -26,6 +26,11 @@ _resolved_sandbox_ns: ContextVar[Optional[Tuple[str, str]]] = ContextVar(
     "resolved_sandbox_ns", default=None
 )
 
+# Namespace as observed by ingress at observed_at (renew-intent payload).
+# First-hand but time-bounded: by processing time the sandbox may have moved,
+# so the lookup must still verify a workload exists there before using it.
+_observed_namespace: ContextVar[Optional[str]] = ContextVar("observed_namespace", default=None)
+
 
 def get_current_tenant() -> Optional[TenantEntry]:
     return _current_tenant.get()
@@ -51,3 +56,13 @@ def remember_resolved_sandbox_ns(sandbox_id: str, namespace: str) -> None:
 def reset_resolved_sandbox_ns() -> None:
     """Drop the memoized resolution; the next lookup starts from scratch."""
     _resolved_sandbox_ns.set(None)
+
+
+def get_observed_namespace() -> Optional[str]:
+    """Return the namespace ingress observed for the current attempt, if any."""
+    return _observed_namespace.get()
+
+
+def set_observed_namespace(namespace: Optional[str]) -> None:
+    """Set (or clear) the ingress-observed namespace for the current attempt."""
+    _observed_namespace.set(namespace)
