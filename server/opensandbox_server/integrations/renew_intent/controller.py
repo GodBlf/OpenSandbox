@@ -32,6 +32,7 @@ from opensandbox_server.integrations.renew_intent.logutil import (
     RENEW_SOURCE_SERVER_PROXY,
     renew_bundle,
 )
+from opensandbox_server.tenants.context import reset_resolved_sandbox_ns
 
 if TYPE_CHECKING:
     from opensandbox_server.services.extension_service import ExtensionService
@@ -73,6 +74,9 @@ class AccessRenewController:
         logger.warning(f"renew_intent {line} detail={detail_s}", extra=ex)
 
     def _try_renew_sync(self, sandbox_id: str, *, source: str) -> bool:
+        # Namespace resolution is memoized per attempt; a fresh attempt must
+        # not see the previous attempt's result (the sandbox may have moved).
+        reset_resolved_sandbox_ns()
         try:
             sandbox = self._sandbox_service.get_sandbox(sandbox_id)
         except HTTPException as exc:

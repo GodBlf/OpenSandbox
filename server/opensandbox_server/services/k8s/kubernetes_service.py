@@ -223,16 +223,21 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
                         return entry.namespace
                 except Exception:
                     continue
+            return self._find_sandbox_namespace_cluster_wide(sandbox_id)
 
-        return self._find_sandbox_namespace_cluster_wide(sandbox_id)
+        # No tenant provider (single-tenant mode): the server owns exactly
+        # its configured namespace. Resolving beyond it could reach sandboxes
+        # of other servers in the cluster, and single-tenant proxy routes
+        # are unauthenticated, so the lookup stays namespace-scoped.
+        return None
 
     def _find_sandbox_namespace_cluster_wide(self, sandbox_id: str) -> Optional[str]:
         """Locate a sandbox by its id label across all namespaces.
 
         Heals the window after a restart when no tenant information is
-        cached. Requires cluster-wide list permission; a 403 opens a backoff
-        window during which lookups degrade to "not found" (skipped, with
-        one warning per window).
+        cached (multi-tenant mode only). Requires cluster-wide list
+        permission; a 403 opens a backoff window during which lookups
+        degrade to "not found" (skipped, with one warning per window).
         """
         last_forbidden = self._cluster_lookup_forbidden_monotonic
         if (
@@ -244,10 +249,23 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
         try:
             selector = f"{SANDBOX_ID_LABEL}={sandbox_id}"
             workloads = self.workload_provider.list_workloads_all_namespaces(selector)
-            for workload in workloads:
-                namespace = (workload.get("metadata") or {}).get("namespace")
-                if namespace:
-                    return namespace
+            namespaces = {
+                (workload.get("metadata") or {}).get("namespace")
+                for workload in workloads
+            }
+            namespaces.discard(None)
+            if len(namespaces) == 1:
+                return namespaces.pop()
+            if namespaces:
+                # Duplicate sandbox-id labels across namespaces: resolving by
+                # picking one arbitrarily could act on the wrong sandbox.
+                logger.warning(
+                    "cluster-wide lookup for sandbox %s matched %d namespaces "
+                    "(%s); treating as unresolved (duplicate sandbox labels?)",
+                    sandbox_id,
+                    len(namespaces),
+                    ", ".join(sorted(namespaces)),
+                )
         except ApiException as exc:
             if exc.status == 403:
                 # Cluster-wide list permission is a deployment property;

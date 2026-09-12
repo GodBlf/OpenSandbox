@@ -46,3 +46,8 @@ def get_resolved_sandbox_ns(sandbox_id: str) -> Optional[str]:
 def remember_resolved_sandbox_ns(sandbox_id: str, namespace: str) -> None:
     """Memoize a namespace resolution for the rest of the current context only."""
     _resolved_sandbox_ns.set((sandbox_id, namespace))
+
+
+def reset_resolved_sandbox_ns() -> None:
+    """Drop the memoized resolution; the next lookup starts from scratch."""
+    _resolved_sandbox_ns.set(None)

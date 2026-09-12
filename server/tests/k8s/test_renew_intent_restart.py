@@ -33,18 +33,19 @@ from opensandbox_server.integrations.renew_intent.logutil import RENEW_SOURCE_RE
 TENANT_NS = "tenant-alpha"
 
 
-def _stage_running_sandbox(k8s_service, mock_workload) -> datetime:
-    """Make the sandbox resolvable and renewable, but only in TENANT_NS."""
+def _stage_running_sandbox(k8s_service, mock_workload, namespace: str = TENANT_NS) -> datetime:
+    """Make the sandbox resolvable and renewable, but only in `namespace`."""
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
+    expected_ns = namespace
 
     def get_workload(sandbox_id, namespace):
-        return mock_workload if namespace == TENANT_NS else None
+        return mock_workload if namespace == expected_ns else None
 
     k8s_service.workload_provider.get_workload.side_effect = get_workload
     # Cluster-wide label lookup: resolves the sandbox even
     # when no tenant information is cached.
     k8s_service.workload_provider.list_workloads_all_namespaces.return_value = [
-        {"metadata": {"namespace": TENANT_NS}}
+        {"metadata": {"namespace": namespace}}
     ]
     k8s_service.workload_provider.get_status.return_value = {
         "state": "Running",
@@ -207,3 +208,77 @@ def test_renew_attempt_issues_single_cluster_list(k8s_service, mock_workload):
     assert ok is True
     k8s_service.workload_provider.update_expiration.assert_called_once()
     assert k8s_service.workload_provider.list_workloads_all_namespaces.call_count == 1
+
+
+def test_single_tenant_lookup_stays_in_configured_namespace(k8s_service, mock_workload):
+    """Single-tenant mode must not use the cluster-wide fallback.
+
+    A server without a tenant provider owns exactly its configured
+    namespace; resolving a foreign id beyond it could reach other servers'
+    sandboxes, and single-tenant proxy routes are unauthenticated.
+    """
+    k8s_service.workload_provider.get_workload.return_value = None
+
+    assert k8s_service._find_sandbox_namespace("foreign-sbx") is None
+    k8s_service.workload_provider.list_workloads_all_namespaces.assert_not_called()
+
+    # With no resolution the caller falls back to the configured namespace
+    # and 404s there, exactly the pre-fallback behavior.
+    assert (
+        k8s_service._resolve_namespace_for_lookup("foreign-sbx")
+        == k8s_service.namespace
+    )
+
+
+def test_second_attempt_re_resolves_after_sandbox_moves(k8s_service, mock_workload):
+    """Two attempts for the same id must not share the memoized namespace.
+
+    If the sandbox is deleted and recreated in another namespace between
+    attempts, the second attempt has to re-resolve instead of trusting the
+    first attempt's memo (which would 404 in the old namespace).
+    """
+    k8s_service.set_tenant_provider(_no_tenant_info_provider())
+
+    extension_service = MagicMock()
+    extension_service.get_access_renew_extend_seconds.return_value = 600
+    controller = AccessRenewController(k8s_service, extension_service)
+
+    _stage_running_sandbox(k8s_service, mock_workload, namespace=TENANT_NS)
+    assert controller.attempt_renew_sync("moved-sbx", source=RENEW_SOURCE_REDIS_QUEUE)
+    assert k8s_service.workload_provider.list_workloads_all_namespaces.call_count == 1
+
+    # The sandbox "moves": same id, different namespace.
+    _stage_running_sandbox(k8s_service, mock_workload, namespace="tenant-beta")
+    assert controller.attempt_renew_sync("moved-sbx", source=RENEW_SOURCE_REDIS_QUEUE)
+    # The second attempt went through a fresh cluster LIST, not the memo.
+    assert k8s_service.workload_provider.list_workloads_all_namespaces.call_count == 2
+
+
+def test_cluster_lookup_with_duplicate_matches_is_rejected(k8s_service, mock_workload):
+    """Duplicate label matches must not resolve by picking one arbitrarily.
+
+    Two workloads carrying the same sandbox-id label in different namespaces
+    is an operator problem; acting on a random one of them could renew the
+    wrong sandbox. The lookup must refuse and say why.
+    """
+    k8s_service.set_tenant_provider(_no_tenant_info_provider())
+    k8s_service.workload_provider.get_workload.return_value = None
+    k8s_service.workload_provider.list_workloads_all_namespaces.return_value = [
+        {"metadata": {"namespace": "tenant-alpha"}},
+        {"metadata": {"namespace": "tenant-beta"}},
+    ]
+
+    handler = _CapturingHandler()
+    ks_logger = logging.getLogger("opensandbox_server.services.k8s.kubernetes_service")
+    ks_logger.addHandler(handler)
+    try:
+        assert k8s_service._find_sandbox_namespace_cluster_wide("dup-sbx") is None
+        # Unresolved: callers fall back to the configured namespace and 404 there.
+        assert k8s_service._resolve_namespace_for_lookup("dup-sbx") == k8s_service.namespace
+    finally:
+        ks_logger.removeHandler(handler)
+
+    messages = [record.getMessage() for record in handler.records]
+    assert any("matched 2 namespaces" in message for message in messages), (
+        "expected an ambiguity warning instead of an arbitrary pick"
+    )
