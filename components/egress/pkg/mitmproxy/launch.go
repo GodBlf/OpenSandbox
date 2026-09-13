@@ -28,6 +28,7 @@ import (
 
 	"github.com/alibaba/opensandbox/egress/pkg/constants"
 	"github.com/alibaba/opensandbox/egress/pkg/log"
+	"github.com/alibaba/opensandbox/egress/pkg/telemetry"
 	"github.com/alibaba/opensandbox/internal/safego"
 )
 
@@ -42,14 +43,19 @@ const listenHostLoopback = "127.0.0.1"
 // (COPY components/egress/mitmscripts /var/egress/mitmscripts). Always loaded.
 const systemScriptPath = "/var/egress/mitmscripts/system.py"
 
-// Config: mitmdump --mode transparent. Static options (mode, connection_strategy,
-// listen_host, stream_large_bodies, ignore_hosts,
-// ssl_verify_upstream_trusted_confdir) live in
-// /var/lib/mitmproxy/.mitmproxy/config.yaml and are auto-loaded by mitmdump.
-// This struct carries only per-launch dynamic values that override those
-// defaults via `--set`.
+// Config carries only per-launch dynamic values, applied via `--set`. Static
+// options (mode, listen_host, connection_strategy, stream_large_bodies,
+// ignore_hosts, ssl_verify_upstream_trusted_confdir) are auto-loaded by
+// mitmdump from /var/lib/mitmproxy/.mitmproxy/config.yaml (shipped from
+// components/egress/mitmproxy/config.yaml).
 type Config struct {
 	ListenPort int
+	// ListenHost overrides the baked-in config.yaml listen_host
+	// (127.0.0.1 for the sidecar). The fast-sandbox profile passes 0.0.0.0: the
+	// per-subject interception DNAT lands traffic on the gateway veth
+	// address, which a loopback bind would never receive (same reason the
+	// fast-sandbox DNS proxy binds :15353).
+	ListenHost string
 	UserName   string
 	// ScriptPaths are optional user-supplied addons, loaded after the system addon
 	// in the order given. Parsed from the comma-separated OPENSANDBOX_EGRESS_MITMPROXY_SCRIPT env var.
@@ -142,6 +148,9 @@ func buildMitmdumpArgs(cfg Config) []string {
 		"--listen-port", strconv.Itoa(cfg.ListenPort),
 		"--set", "flow_detail=0",
 	}
+	if strings.TrimSpace(cfg.ListenHost) != "" {
+		args = append(args, "--listen-host", cfg.ListenHost)
+	}
 
 	if trustDir := strings.TrimSpace(os.Getenv(constants.EnvMitmproxyUpstreamTrustDir)); trustDir != "" {
 		args = append(args, "--set", "ssl_verify_upstream_trusted_confdir="+trustDir)
@@ -178,6 +187,10 @@ func forwardMitmdumpOutput(r io.ReadCloser) {
 		line := strings.TrimRight(scanner.Text(), " \t\r")
 		msg, ok := credentialProxyMessage(line)
 		if !ok {
+			continue
+		}
+		if strings.HasPrefix(msg, "credential proxy: tls-shadow ") {
+			telemetry.RecordTLSShadow(strings.TrimPrefix(msg, "credential proxy: tls-shadow "))
 			continue
 		}
 		log.Warnf("[mitmproxy] %s", msg)

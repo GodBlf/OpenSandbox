@@ -30,6 +30,7 @@ import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxEndpoint
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxFilter
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxImageSpec
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxInfo
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxLifecycle
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxRenewResponse
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SnapshotFilter
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SnapshotInfo
@@ -46,6 +47,7 @@ import com.alibaba.opensandbox.sandbox.infrastructure.adapters.converter.Sandbox
 import com.alibaba.opensandbox.sandbox.infrastructure.adapters.converter.SandboxModelConverter.toSnapshotInfo
 import com.alibaba.opensandbox.sandbox.infrastructure.adapters.converter.toSandboxApiException
 import com.alibaba.opensandbox.sandbox.infrastructure.adapters.converter.toSandboxException
+import com.alibaba.opensandbox.sandbox.transport.RequestDeadline
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -112,6 +114,79 @@ internal class SandboxesAdapter(
             credentialProxy = null,
             resourceRequests = resourceRequests,
             readOnlyRootFilesystem = null,
+            lifecycle = null,
+        )
+
+    override fun createSandbox(
+        spec: SandboxImageSpec?,
+        entrypoint: List<String>?,
+        env: Map<String, String>,
+        metadata: Map<String, String>,
+        timeout: Duration?,
+        resource: Map<String, String>,
+        networkPolicy: NetworkPolicy?,
+        extensions: Map<String, String>,
+        volumes: List<Volume>?,
+        platform: PlatformSpec?,
+        secureAccess: Boolean,
+        snapshotId: String?,
+        credentialProxy: CredentialProxyConfig?,
+        resourceRequests: Map<String, String>?,
+        readOnlyRootFilesystem: Boolean?,
+    ): SandboxCreateResponse =
+        createSandbox(
+            spec = spec,
+            entrypoint = entrypoint,
+            env = env,
+            metadata = metadata,
+            timeout = timeout,
+            resource = resource,
+            networkPolicy = networkPolicy,
+            extensions = extensions,
+            volumes = volumes,
+            platform = platform,
+            secureAccess = secureAccess,
+            snapshotId = snapshotId,
+            credentialProxy = credentialProxy,
+            resourceRequests = resourceRequests,
+            readOnlyRootFilesystem = readOnlyRootFilesystem,
+            lifecycle = null,
+        )
+
+    override fun createSandbox(
+        spec: SandboxImageSpec?,
+        entrypoint: List<String>?,
+        env: Map<String, String>,
+        metadata: Map<String, String>,
+        timeout: Duration?,
+        resource: Map<String, String>,
+        networkPolicy: NetworkPolicy?,
+        extensions: Map<String, String>,
+        volumes: List<Volume>?,
+        platform: PlatformSpec?,
+        secureAccess: Boolean,
+        snapshotId: String?,
+        credentialProxy: CredentialProxyConfig?,
+        resourceRequests: Map<String, String>?,
+        lifecycle: SandboxLifecycle?,
+    ): SandboxCreateResponse =
+        createSandbox(
+            spec = spec,
+            entrypoint = entrypoint,
+            env = env,
+            metadata = metadata,
+            timeout = timeout,
+            resource = resource,
+            networkPolicy = networkPolicy,
+            extensions = extensions,
+            volumes = volumes,
+            platform = platform,
+            secureAccess = secureAccess,
+            snapshotId = snapshotId,
+            credentialProxy = credentialProxy,
+            resourceRequests = resourceRequests,
+            readOnlyRootFilesystem = null,
+            lifecycle = lifecycle,
         )
 
     override fun createSandbox(
@@ -146,6 +221,7 @@ internal class SandboxesAdapter(
             credentialProxy = null,
             resourceRequests = resourceRequests,
             readOnlyRootFilesystem = readOnlyRootFilesystem,
+            lifecycle = null,
         )
 
     override fun createSandbox(
@@ -180,6 +256,7 @@ internal class SandboxesAdapter(
             credentialProxy = credentialProxy,
             resourceRequests = resourceRequests,
             readOnlyRootFilesystem = null,
+            lifecycle = null,
         )
 
     override fun createSandbox(
@@ -198,6 +275,7 @@ internal class SandboxesAdapter(
         credentialProxy: CredentialProxyConfig?,
         resourceRequests: Map<String, String>?,
         readOnlyRootFilesystem: Boolean?,
+        lifecycle: SandboxLifecycle?,
     ): SandboxCreateResponse {
         logger.info("Creating sandbox with startup source: {}", spec?.image ?: snapshotId)
 
@@ -219,12 +297,12 @@ internal class SandboxesAdapter(
                     snapshotId = snapshotId,
                     resourceRequests = resourceRequests,
                     readOnlyRootFilesystem = readOnlyRootFilesystem,
+                    lifecycle = lifecycle,
                 )
             val apiResponse = api.sandboxesPost(createRequest)
             val response = apiResponse.toSandboxCreateResponse()
 
             logger.info("Successfully created sandbox: {}", response.id)
-
             response
         } catch (e: Exception) {
             throw e.toSandboxException()
@@ -360,7 +438,13 @@ internal class SandboxesAdapter(
     ): SandboxEndpoint {
         logger.debug("Retrieving sandbox endpoint: {}, port {}", sandboxId, port)
         return try {
-            api.sandboxesSandboxIdEndpointsPortGet(sandboxId, port, useServerProxy).toSandboxEndpoint()
+            RequestDeadline.execute(provider.authenticatedClient) { client ->
+                SandboxesApi(provider.config.getBaseUrl(), client)
+                    .sandboxesSandboxIdEndpointsPortGet(sandboxId, port, useServerProxy).toSandboxEndpoint()
+            }
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw e
         } catch (e: Exception) {
             logger.error("Failed to retrieve sandbox endpoint for sandbox {}", sandboxId, e)
             throw e.toSandboxException()

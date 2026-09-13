@@ -44,6 +44,14 @@ rules:
   - apiGroups: ["sandbox.opensandbox.io"]
     resources: ["sandboxsnapshots", "sandboxsnapshots/status", "sandboxsnapshots/finalizers"]
     verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+  # Fsb: Sandbox CR reads power Get/List; SandboxTemplate
+  # CRUD powers the /templates management API.
+  - apiGroups: ["sandbox.fast.io"]
+    resources: ["sandboxes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["sandbox.fast.io"]
+    resources: ["sandboxtemplates"]
+    verbs: ["create", "delete", "get", "list", "watch"]
 ---
 apiVersion: {{ include "opensandbox-server.rbac.apiVersion" . }}
 kind: ClusterRoleBinding
@@ -81,6 +89,8 @@ metadata:
     {{- include "opensandbox-server.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.server.replicaCount }}
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       {{- include "opensandbox-server.selectorLabels" . | nindent 6 }}
@@ -205,11 +215,14 @@ metadata:
   labels:
     {{- include "opensandbox-server.labels" . | nindent 4 }}
 spec:
-  type: ClusterIP
+  type: {{ .Values.server.service.type }}
   ports:
     - port: 80
       targetPort: http
       protocol: TCP
       name: http
+      {{- if and .Values.server.service.nodePort (ne .Values.server.service.type "ClusterIP") }}
+      nodePort: {{ .Values.server.service.nodePort }}
+      {{- end }}
   selector:
     {{- include "opensandbox-server.selectorLabels" . | nindent 4 }}

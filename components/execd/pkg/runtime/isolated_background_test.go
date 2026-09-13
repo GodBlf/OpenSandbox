@@ -26,6 +26,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func waitForBackgroundRun(
@@ -596,12 +598,60 @@ func TestBackgroundRunLogCappedOnDisk(t *testing.T) {
 		t.Fatal("run record missing")
 	}
 	run := v.(*IsolatedBackgroundRun)
-	info, err := os.Stat(run.logPath)
-	if err != nil {
-		t.Fatalf("stat log: %v", err)
+	// The completion flag is published before the monitor caps the log.
+	require.Eventually(t, func() bool {
+		info, err := os.Stat(run.logPath)
+		return err == nil && info.Size() == maxBackgroundLogReadBytes
+	}, 5*time.Second, 10*time.Millisecond, "completed run log should be capped")
+}
+
+// TestSeekIsolatedBackgroundOutput_ClampsCursorPastEOF verifies a cursor beyond
+// the current end of the log returns empty output with the real end offset, so
+// later writes are still delivered on the next poll (#1010).
+func TestSeekIsolatedBackgroundOutput_ClampsCursorPastEOF(t *testing.T) {
+	runner := newTestRunner(t)
+	dir := t.TempDir()
+	runDir := filepath.Join(dir, isolatedBackgroundRunDir)
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
 	}
-	if info.Size() != maxBackgroundLogReadBytes {
-		t.Errorf("log size = %d, want %d (capped)", info.Size(), maxBackgroundLogReadBytes)
+	logPath := filepath.Join(runDir, "run-past-eof.log")
+	if err := os.WriteFile(logPath, []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	run := &IsolatedBackgroundRun{
+		ID:        "run-past-eof",
+		SessionID: "session-past-eof",
+		logPath:   logPath,
+		logRoot:   dir,
+	}
+	runner.bgRuns.Store(run.ID, run)
+
+	data, cursor, err := runner.SeekIsolatedBackgroundOutput(run.SessionID, run.ID, 10_000_000)
+	if err != nil {
+		t.Fatalf("SeekIsolatedBackgroundOutput: %v", err)
+	}
+	if len(data) != 0 {
+		t.Errorf("data = %q, want empty", data)
+	}
+	if cursor != 5 {
+		t.Errorf("cursor = %d, want 5 (clamped to the end of the log)", cursor)
+	}
+
+	// New output written after the overshooting poll must still be readable.
+	if err := os.WriteFile(logPath, []byte("hello world"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	data, cursor, err = runner.SeekIsolatedBackgroundOutput(run.SessionID, run.ID, cursor)
+	if err != nil {
+		t.Fatalf("SeekIsolatedBackgroundOutput (remainder): %v", err)
+	}
+	if string(data) != " world" {
+		t.Errorf("data = %q, want %q", data, " world")
+	}
+	if cursor != 11 {
+		t.Errorf("cursor = %d, want 11", cursor)
 	}
 }
 

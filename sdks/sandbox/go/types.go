@@ -147,6 +147,26 @@ type CredentialProxyConfig struct {
 	Enabled bool `json:"enabled"`
 }
 
+// LifecycleHook is a command executed before the sandbox entrypoint starts.
+type LifecycleHook struct {
+	Command        []string `json:"command"`
+	TimeoutSeconds *int     `json:"timeoutSeconds,omitempty"`
+}
+
+// PeriodicLifecycleHook is a named command scheduled while the sandbox is running.
+type PeriodicLifecycleHook struct {
+	Name           string   `json:"name"`
+	Schedule       string   `json:"schedule"`
+	Command        []string `json:"command"`
+	TimeoutSeconds *int     `json:"timeoutSeconds,omitempty"`
+}
+
+// SandboxLifecycle contains optional lifecycle hooks applied during sandbox creation.
+type SandboxLifecycle struct {
+	PreStart *LifecycleHook          `json:"preStart,omitempty"`
+	Periodic []PeriodicLifecycleHook `json:"periodic,omitempty"`
+}
+
 // CreateSandboxRequest is the request body for creating a new sandbox.
 type CreateSandboxRequest struct {
 	Image                  *ImageSpec             `json:"image,omitempty"`
@@ -157,6 +177,7 @@ type CreateSandboxRequest struct {
 	Env                    map[string]string      `json:"env,omitempty"`
 	SecureAccess           bool                   `json:"secureAccess,omitempty"`
 	Metadata               map[string]string      `json:"metadata,omitempty"`
+	Lifecycle              *SandboxLifecycle      `json:"lifecycle,omitempty"`
 	Entrypoint             []string               `json:"entrypoint,omitempty"`
 	NetworkPolicy          *NetworkPolicy         `json:"networkPolicy,omitempty"`
 	CredentialProxy        *CredentialProxyConfig `json:"credentialProxy,omitempty"`
@@ -529,9 +550,12 @@ type CreateSessionRequest struct {
 	Cwd string `json:"cwd,omitempty"`
 }
 
-// RunCommandRequest is the request body for executing a shell command.
+// RunCommandRequest executes exactly one of Command (shell text) or Argv (literal arguments).
 type RunCommandRequest struct {
-	Command    string            `json:"command"`
+	Command string `json:"command,omitempty"`
+	// Argv must contain a non-empty executable at index 0; no element may contain NUL.
+	// These constraints are validated by the server.
+	Argv       []string          `json:"argv,omitempty"`
 	Cwd        string            `json:"cwd,omitempty"`
 	Background bool              `json:"background,omitempty"`
 	Timeout    int64             `json:"timeout,omitempty"`

@@ -72,6 +72,49 @@ Bash session API (which keeps its existing name for compatibility), and
 isolated sessions. Commands submitted to a fallback session must use syntax
 supported by that image's `sh` implementation.
 
+### Command execution
+
+`POST /command` runs a command in foreground or background mode. Supply either
+`command` for shell syntax (such as pipelines and redirection) or `argv` to
+execute a program directly with literal arguments.
+
+```json
+{
+  "argv": ["python3", "-c", "import sys; print(sys.argv[1:])", "a b", "$HOME"],
+  "cwd": "$WORKSPACE",
+  "envs": {"WORKSPACE": "/workspace"}
+}
+```
+
+`argv` preserves arguments literally, including empty strings; `$HOME` in this
+example is not expanded. Relative executable paths use `cwd`; bare names
+search absolute entries in the child `PATH`. Use `./tool` to run a local
+executable.
+
+Both modes use the environment priority request `envs` > `EXECD_ENVS` > daemon
+environment. Request values are literal. `cwd` expands `$NAME` and `${NAME}`
+using that environment, and leading `~` using the daemon user's home.
+Undefined variables fail validation; omitted `cwd` inherits the daemon
+directory.
+
+On Windows, environment names are case-insensitive and arguments use standard
+Windows encoding. Batch files require a shell; use absolute paths instead of
+drive-relative paths such as `C:tool.exe`. See the [OpenAPI reference](/api/)
+for field constraints and executable lookup details.
+
+### Command output retention
+
+Foreground command output is streamed over SSE and its temporary stdout and
+stderr files are removed as soon as streaming completes. Completed command
+metadata and detached background-command output remain available for 24 hours.
+Cleanup runs hourly after that retention window. Running commands are never
+removed by retention cleanup.
+
+The command-output janitor also removes matching files older than 24 hours that
+were left directly under the system temporary directory by earlier execd
+versions. New output is isolated under the `opensandbox-execd` temporary
+subdirectory so command files do not accumulate in the shared directory root.
+
 ## PTY WebSocket access
 
 The first WebSocket attached to `/pty/{session_id}/ws` is the exclusive
@@ -211,10 +254,40 @@ override it.
 | `EXECD_INIT` | Init-mode switch read by `bootstrap.sh`: when truthy (`1`/`true`/`yes`/`on`), the script `exec`s `execd --init -- <user command>` so execd becomes PID 1; see [Init mode](#init-mode). Unset preserves the classic background-and-wait topology. |
 | `EXECD_CLONE3_COMPAT` | Linux clone3 compatibility switch (see below). |
 | `EXECD_LOG_FILE` | Optional log output file path; default is stdout. |
+| `EXECD_ENVS` | Optional file of `KEY=VALUE` lines supplying command environment variables. Values expand daemon environment variables; blank lines and `#` comments are ignored. |
 | `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | Preferred OTLP metrics endpoint. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Fallback OTLP endpoint when metrics-specific endpoint is unset. |
-| `OPENSANDBOX_ID` | Authoritative sandbox id stamped into eBPF audit records (`sandbox_id`) and metrics; the server injects it on Docker/Kubernetes task-template paths. Kubernetes pool allocations that skip the task template (default entrypoint, no env, no init mode) cannot inject it, and the eBPF layer reports `unsupported` attribution on that path. |
+| `OPENSANDBOX_ID` | Authoritative sandbox id stamped into eBPF audit records (`sandbox_id`) and metrics; the server injects it on Docker/Kubernetes task-template paths. Lifecycle Pool requests always schedule a task template and receive this value. Direct BatchSandbox resources that omit the task template cannot inject it, and the eBPF layer reports `unsupported` attribution on that path. |
 | `OPENSANDBOX_EXECD_METRICS_EXTRA_ATTRS` | Optional extra metric attrs (`k=v,k2=v2`). |
+
+### Transparent MITM CA trust
+
+When transparent MITM is enabled, `bootstrap.sh` installs the exported CA into
+the available system, NSS, and JDK trust stores on a best-effort basis. The
+official execd image includes `certutil` through Alpine's `nss-tools` package,
+so it can update the per-user NSS database used by Chromium and Chrome when
+that image is used directly.
+
+The Docker and Kubernetes runtime injection paths copy execd, `bootstrap.sh`,
+and static helpers into the workload image. They do not copy the execd image's
+dynamic NSS libraries or package database. A custom workload image that needs
+Chromium or Chrome trust must therefore install its native `certutil` package,
+such as `nss-tools` on Alpine or `libnss3-tools` on Debian/Ubuntu. If
+`certutil` is absent, bootstrap logs a warning and continues; other available
+trust-store integrations still run, but Chromium or Chrome may reject the
+intercepted certificate.
+
+### Lifecycle hook trust boundary
+
+`execd` runs configured `preStart` and `periodic` commands directly as its own
+OS user in the sandbox's existing container namespaces. Lifecycle hooks do not
+use isolated-session confinement.
+
+Lifecycle hooks are trusted setup and maintenance code, not a security or
+policy boundary. The default persisted config at
+`$HOME/.execd/lifecycle.toml` is writable by execd's user, and a root sandbox
+workload can modify or remove it. Do not use hooks for tamper-resistant
+auditing or mandatory controls against sandbox workloads.
 
 ### Isolation Config File
 
@@ -339,6 +412,9 @@ OTLP metrics export is enabled when either endpoint is set:
 
 - `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`
 - `OTEL_EXPORTER_OTLP_ENDPOINT`
+
+For node-IP fallback behavior, standard disable switches, supported transport,
+and cumulative/delta export settings, see [component telemetry configuration](/guides/component-telemetry).
 
 ### Local Metrics Endpoints
 

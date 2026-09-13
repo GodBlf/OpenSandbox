@@ -31,9 +31,11 @@ from fastapi.responses import StreamingResponse
 from starlette.types import Receive, Scope, Send
 from starlette.websockets import WebSocketDisconnect
 from websockets.asyncio.client import ClientConnection
+from websockets.frames import EXTERNAL_CLOSE_CODES, CloseCode
 from websockets.typing import Origin
 
 from opensandbox_server.api import lifecycle
+from opensandbox_server.config import get_config
 from opensandbox_server.api.schema import Endpoint
 from opensandbox_server.middleware.auth import SANDBOX_API_KEY_HEADER
 from opensandbox_server.services.constants import OPEN_SANDBOX_EGRESS_AUTH_HEADER, OPEN_SANDBOX_SECURE_ACCESS_HEADER
@@ -316,7 +318,13 @@ async def _proxy_http_request(
     port: int,
     full_path: str,
 ) -> StreamingResponse:
-    endpoint = lifecycle.sandbox_service.get_endpoint(sandbox_id, port, resolve_internal=True)
+    resolve_internal = get_config().proxy.resolve_internal
+    endpoint = lifecycle.sandbox_service.get_endpoint(
+        sandbox_id,
+        port,
+        resolve_internal=resolve_internal,
+        use_proxy_host=not resolve_internal,
+    )
     _verify_secure_access(endpoint, request.headers)
     _schedule_proxy_renew(request, sandbox_id)
     query_string = request.url.query
@@ -381,10 +389,13 @@ async def _proxy_http_request(
             # after client.send() must release the acquired pool connection.
             await _close_backend_response(resp)
             raise
-    except httpx.ConnectError as e:
+    except (httpx.ConnectError, httpx.ConnectTimeout) as e:
         raise HTTPException(
             status_code=502,
-            detail=f"Could not connect to the backend sandbox {endpoint}: {e}",
+            detail={
+                "code": "BACKEND_CONNECTION_FAILED",
+                "message": f"Could not connect to the backend sandbox {endpoint}: {e}",
+            },
         ) from e
     except HTTPException:
         raise
@@ -411,6 +422,33 @@ async def _fail_client_websocket(websocket: WebSocket, code: int, reason: str = 
         pass
 
 
+def _client_websocket_close_code(code: int | None) -> int:
+    """Map non-transmittable close codes to a legal client close code."""
+    if code is None:
+        return status.WS_1000_NORMAL_CLOSURE
+    if code in EXTERNAL_CLOSE_CODES or 3000 <= code < 5000:
+        return code
+    return status.WS_1011_INTERNAL_ERROR
+
+
+def _backend_websocket_close_code(code: int | None) -> int:
+    """Map non-transmittable disconnect codes to a legal backend close code.
+
+    ASGI reports ``1005`` when the client closed without a status code and
+    ``1006`` when the connection dropped without a Close frame. RFC 6455 7.4.1
+    reserves both for local use, so relaying either to the backend is rejected
+    when the Close frame is serialized.
+    """
+    if code is None:
+        return status.WS_1000_NORMAL_CLOSURE
+    if code in EXTERNAL_CLOSE_CODES or 3000 <= code < 5000:
+        return code
+    if code == CloseCode.NO_STATUS_RCVD:
+        # The client did send a Close frame, it just carried no status code.
+        return status.WS_1000_NORMAL_CLOSURE
+    return status.WS_1001_GOING_AWAY
+
+
 async def _relay_client_messages(
     websocket: WebSocket,
     backend: ClientConnection,
@@ -426,12 +464,15 @@ async def _relay_client_messages(
                     await backend.send(message["bytes"])
             elif message["type"] == "websocket.disconnect":
                 await backend.close(
-                    code=message.get("code", status.WS_1000_NORMAL_CLOSURE),
+                    code=_backend_websocket_close_code(message.get("code")),
                     reason=message.get("reason") or "",
                 )
                 return
     except WebSocketDisconnect as exc:
-        await backend.close(code=exc.code, reason=getattr(exc, "reason", "") or "")
+        await backend.close(
+            code=_backend_websocket_close_code(exc.code),
+            reason=getattr(exc, "reason", "") or "",
+        )
     finally:
         cancel_scope.cancel()
 
@@ -451,7 +492,7 @@ async def _relay_backend_messages(
     except websockets.ConnectionClosed as exc:
         try:
             await websocket.close(
-                code=exc.code or status.WS_1000_NORMAL_CLOSURE,
+                code=_client_websocket_close_code(exc.code),
                 reason=exc.reason or "",
             )
         except RuntimeError:
@@ -470,7 +511,13 @@ async def _proxy_websocket_request(
         return
 
     try:
-        endpoint = lifecycle.sandbox_service.get_endpoint(sandbox_id, port, resolve_internal=True)
+        resolve_internal = get_config().proxy.resolve_internal
+        endpoint = lifecycle.sandbox_service.get_endpoint(
+            sandbox_id,
+            port,
+            resolve_internal=resolve_internal,
+            use_proxy_host=not resolve_internal,
+        )
     except HTTPException as exc:
         logger.warning(
             "Rejecting websocket proxy request for sandbox=%s port=%s: %s",
@@ -562,10 +609,6 @@ async def _proxy_websocket_request(
         await _fail_client_websocket(websocket, status.WS_1011_INTERNAL_ERROR, "")
 
 
-@router.api_route(
-    "/sandboxes/{sandbox_id}/proxy/{port}",
-    methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
-)
 async def proxy_sandbox_endpoint_root(
     request: Request,
     sandbox_id: str,
@@ -575,10 +618,6 @@ async def proxy_sandbox_endpoint_root(
     return await _proxy_http_request(request, sandbox_id, port, "")
 
 
-@router.api_route(
-    "/sandboxes/{sandbox_id}/proxy/{port}/{full_path:path}",
-    methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
-)
 async def proxy_sandbox_endpoint_request(
     request: Request,
     sandbox_id: str,
@@ -587,6 +626,60 @@ async def proxy_sandbox_endpoint_request(
 ):
     """Proxy HTTP requests to sandbox-backed services."""
     return await _proxy_http_request(request, sandbox_id, port, full_path)
+
+
+_PROXY_HTTP_METHODS = ("GET", "POST", "PUT", "DELETE", "PATCH")
+_PROXY_OPENAPI_EXTRA = {
+    "responses": {
+        "200": {
+            "description": "Response from the sandbox service; body and media type are backend-defined.",
+            "content": {"*/*": {}},
+        },
+        "default": {
+            "description": (
+                "Response from the sandbox service with a backend-defined status, body, "
+                "and media type. Server-generated errors may also be returned."
+            ),
+            "content": {"*/*": {}},
+        },
+    }
+}
+
+# Keep the multi-method route first for runtime dispatch so 405 responses retain
+# the complete Allow header. The method-specific routes provide unique OpenAPI IDs.
+# Merge response metadata via openapi_extra after FastAPI adds validation errors;
+# responses={"default": ...} would suppress its automatic 422 response.
+router.add_api_route(
+    "/sandboxes/{sandbox_id}/proxy/{port}",
+    proxy_sandbox_endpoint_root,
+    methods=list(_PROXY_HTTP_METHODS),
+    include_in_schema=False,
+)
+
+for _method in _PROXY_HTTP_METHODS:
+    router.add_api_route(
+        "/sandboxes/{sandbox_id}/proxy/{port}",
+        proxy_sandbox_endpoint_root,
+        methods=[_method],
+        response_class=StreamingResponse,
+        openapi_extra=_PROXY_OPENAPI_EXTRA,
+    )
+
+router.add_api_route(
+    "/sandboxes/{sandbox_id}/proxy/{port}/{full_path:path}",
+    proxy_sandbox_endpoint_request,
+    methods=list(_PROXY_HTTP_METHODS),
+    include_in_schema=False,
+)
+
+for _method in _PROXY_HTTP_METHODS:
+    router.add_api_route(
+        "/sandboxes/{sandbox_id}/proxy/{port}/{full_path:path}",
+        proxy_sandbox_endpoint_request,
+        methods=[_method],
+        response_class=StreamingResponse,
+        openapi_extra=_PROXY_OPENAPI_EXTRA,
+    )
 
 
 @router.websocket("/sandboxes/{sandbox_id}/proxy/{port}")

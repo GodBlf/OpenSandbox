@@ -19,6 +19,7 @@ Kubernetes-backed public snapshot runtime.
 from __future__ import annotations
 
 from hashlib import sha256
+import json
 import logging
 import time
 from typing import Optional
@@ -27,13 +28,20 @@ from uuid import UUID
 from kubernetes.client import ApiException
 
 from opensandbox_server.services.snapshot_models import SnapshotState
-from opensandbox_server.services.snapshot_runtime import SnapshotRuntimeStatus
+from opensandbox_server.services.snapshot_runtime import (
+    SnapshotRuntimePreflightError,
+    SnapshotRuntimeStatus,
+    SnapshotRuntimeUnsupportedError,
+)
 
 logger = logging.getLogger(__name__)
 
 _GROUP = "sandbox.opensandbox.io"
 _VERSION = "v1alpha1"
 _PLURAL = "sandboxsnapshots"
+_BATCHSANDBOX_PLURAL = "batchsandboxes"
+_POOL_ALLOCATION_ANNOTATION = "sandbox.opensandbox.io/alloc-status"
+_BATCHSANDBOX_NAME_LABEL = "batch-sandbox.sandbox.opensandbox.io/name"
 
 PUBLIC_SNAPSHOT_NAME_PREFIX = "osb-snap-"
 PUBLIC_SNAPSHOT_TAG_PREFIX = "snap-"
@@ -69,11 +77,13 @@ class KubernetesSnapshotRuntime:
         namespace: str,
         wait_timeout_seconds: float = DEFAULT_WAIT_TIMEOUT_SECONDS,
         poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS,
+        postgresql_ha_enabled: bool = False,
     ) -> None:
         self._k8s_client = k8s_client
         self._namespace = namespace
         self._wait_timeout_seconds = wait_timeout_seconds
         self._poll_interval_seconds = poll_interval_seconds
+        self._postgresql_ha_enabled = postgresql_ha_enabled
         self._snapshot_namespaces: dict[str, str] = {}
 
     def supports_create_snapshot(self) -> bool:
@@ -81,6 +91,66 @@ class KubernetesSnapshotRuntime:
 
     def create_snapshot_unsupported_message(self) -> str:
         return ""
+
+    def preflight_create_snapshot(
+        self,
+        sandbox_id: str,
+        *,
+        namespace: str | None = None,
+    ) -> None:
+        ns = namespace if namespace is not None else self._namespace
+        try:
+            workload = self._k8s_client.get_custom_object(
+                group=_GROUP,
+                version=_VERSION,
+                namespace=ns,
+                plural=_BATCHSANDBOX_PLURAL,
+                name=sandbox_id,
+            )
+            if workload is None:
+                raise SnapshotRuntimePreflightError(
+                    f"Cannot verify snapshot runtime for sandbox {sandbox_id}: "
+                    "BatchSandbox was not found."
+                )
+
+            source_pod = self._source_pod(
+                workload,
+                sandbox_id=sandbox_id,
+                namespace=ns,
+            )
+            pod_spec = self._field(source_pod, "spec")
+            runtime_class_name = self._field(
+                pod_spec,
+                "runtimeClassName",
+                "runtime_class_name",
+            )
+            if runtime_class_name is None:
+                return
+            if not isinstance(runtime_class_name, str) or not runtime_class_name:
+                raise SnapshotRuntimePreflightError(
+                    f"Cannot verify snapshot runtime for sandbox {sandbox_id}: "
+                    "source Pod has an invalid RuntimeClass name."
+                )
+
+            runtime_class = self._k8s_client.read_runtime_class(runtime_class_name)
+            handler = self._runtime_class_handler(runtime_class)
+            if not handler:
+                raise SnapshotRuntimePreflightError(
+                    f"Cannot verify snapshot runtime for sandbox {sandbox_id}: "
+                    f"RuntimeClass {runtime_class_name!r} has no handler."
+                )
+        except SnapshotRuntimePreflightError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise SnapshotRuntimePreflightError(
+                f"Cannot verify snapshot runtime for sandbox {sandbox_id}."
+            ) from exc
+
+        if self._is_gvisor_handler(handler):
+            raise SnapshotRuntimeUnsupportedError(
+                f"gVisor RuntimeClass {runtime_class_name!r} (handler {handler!r}) "
+                "does not support the built-in rootfs snapshot committer."
+            )
 
     def create_snapshot(
         self,
@@ -95,6 +165,20 @@ class KubernetesSnapshotRuntime:
         body = self._build_snapshot_body(snapshot_id, sandbox_id, snapshot_name, namespace=ns)
         should_validate_existing_source = False
 
+        if self._postgresql_ha_enabled:
+            observed = self._observe_before_create(snapshot_name, namespace=ns)
+            if isinstance(observed, SnapshotRuntimeStatus):
+                return observed
+            if observed is not None:
+                conflict = self._validate_existing_source(
+                    observed,
+                    sandbox_id,
+                    require_source=True,
+                )
+                if conflict is not None:
+                    return conflict
+                return self._wait_for_terminal_snapshot(snapshot_id, namespace=ns)
+
         try:
             self._k8s_client.create_custom_object(
                 group=_GROUP,
@@ -105,6 +189,14 @@ class KubernetesSnapshotRuntime:
             )
         except ApiException as exc:
             if exc.status != 409:
+                if self._postgresql_ha_enabled and self._is_retryable_api_error(exc):
+                    return SnapshotRuntimeStatus(
+                        state=SnapshotState.CREATING,
+                        reason="snapshot_runtime_create_retryable",
+                        message=(
+                            f"Kubernetes SandboxSnapshot {snapshot_name} create will be retried: {exc}"
+                        ),
+                    )
                 return SnapshotRuntimeStatus(
                     state=SnapshotState.FAILED,
                     reason="snapshot_runtime_create_failed",
@@ -114,6 +206,14 @@ class KubernetesSnapshotRuntime:
             should_validate_existing_source = True
         except Exception as exc:  # noqa: BLE001
             logger.exception("Failed to create Kubernetes SandboxSnapshot %s: %s", snapshot_name, exc)
+            if self._postgresql_ha_enabled:
+                return SnapshotRuntimeStatus(
+                    state=SnapshotState.CREATING,
+                    reason="snapshot_runtime_create_retryable",
+                    message=(
+                        f"Kubernetes SandboxSnapshot {snapshot_name} create will be retried: {exc}"
+                    ),
+                )
             return SnapshotRuntimeStatus(
                 state=SnapshotState.FAILED,
                 reason="snapshot_runtime_create_failed",
@@ -129,8 +229,30 @@ class KubernetesSnapshotRuntime:
                     snapshot_name,
                     exc,
                 )
+                if self._postgresql_ha_enabled:
+                    return SnapshotRuntimeStatus(
+                        state=SnapshotState.CREATING,
+                        reason="snapshot_runtime_inspect_failed",
+                        message=(
+                            f"Failed to inspect Kubernetes SandboxSnapshot {snapshot_name} "
+                            f"after create conflict: {exc}"
+                        ),
+                    )
             else:
-                conflict = self._validate_existing_source(current, sandbox_id)
+                if current is None and self._postgresql_ha_enabled:
+                    return SnapshotRuntimeStatus(
+                        state=SnapshotState.CREATING,
+                        reason="snapshot_runtime_conflict_not_observed",
+                        message=(
+                            f"Kubernetes SandboxSnapshot {snapshot_name} create conflicted "
+                            "but the existing object is not observable yet."
+                        ),
+                    )
+                conflict = self._validate_existing_source(
+                    current,
+                    sandbox_id,
+                    require_source=self._postgresql_ha_enabled,
+                )
                 if conflict is not None:
                     return conflict
 
@@ -173,9 +295,20 @@ class KubernetesSnapshotRuntime:
 
         if snapshot is None:
             return SnapshotRuntimeStatus(
-                state=SnapshotState.FAILED,
+                state=(
+                    SnapshotState.CREATING
+                    if self._postgresql_ha_enabled
+                    else SnapshotState.FAILED
+                ),
                 reason="snapshot_recovery_missing_snapshot",
-                message=f"Kubernetes SandboxSnapshot {snapshot_name} was not found.",
+                message=(
+                    f"Kubernetes SandboxSnapshot {snapshot_name} was not found"
+                    + (
+                        " and will be created during PostgreSQL recovery."
+                        if self._postgresql_ha_enabled
+                        else "."
+                    )
+                ),
             )
 
         return self._snapshot_status_from_cr(snapshot)
@@ -198,6 +331,83 @@ class KubernetesSnapshotRuntime:
             },
         }
 
+    def _source_pod(
+        self,
+        workload: dict,
+        *,
+        sandbox_id: str,
+        namespace: str,
+    ):
+        for pod_name in self._allocated_pod_names(workload):
+            pod = self._k8s_client.read_pod(namespace, pod_name)
+            if self._pod_is_running(pod):
+                return pod
+
+        pods = self._k8s_client.list_pods(
+            namespace=namespace,
+            label_selector=f"{_BATCHSANDBOX_NAME_LABEL}={sandbox_id}",
+        )
+        for pod in pods:
+            if self._pod_is_running(pod):
+                return pod
+
+        fallback = self._k8s_client.read_pod(namespace, f"{sandbox_id}-0")
+        if self._pod_is_running(fallback):
+            return fallback
+
+        raise SnapshotRuntimePreflightError(
+            f"Cannot verify snapshot runtime for sandbox {sandbox_id}: "
+            "no running source Pod was found."
+        )
+
+    @staticmethod
+    def _allocated_pod_names(workload: dict) -> list[str]:
+        annotations = (workload.get("metadata") or {}).get("annotations") or {}
+        raw_allocation = annotations.get(_POOL_ALLOCATION_ANNOTATION)
+        if not isinstance(raw_allocation, str):
+            return []
+        try:
+            allocation = json.loads(raw_allocation)
+        except (TypeError, ValueError):
+            return []
+        if not isinstance(allocation, dict):
+            return []
+        pod_names = allocation.get("pods")
+        if not isinstance(pod_names, list):
+            return []
+        return [name for name in pod_names if isinstance(name, str) and name]
+
+    @classmethod
+    def _pod_is_running(cls, pod) -> bool:
+        status = cls._field(pod, "status")
+        return cls._field(status, "phase") == "Running"
+
+    @staticmethod
+    def _field(value, *names: str):
+        if isinstance(value, dict):
+            for name in names:
+                if name in value:
+                    return value[name]
+            return None
+        for name in names:
+            field = getattr(value, name, None)
+            if field is not None:
+                return field
+        return None
+
+    @staticmethod
+    def _runtime_class_handler(runtime_class) -> str | None:
+        if isinstance(runtime_class, dict):
+            handler = runtime_class.get("handler")
+        else:
+            handler = getattr(runtime_class, "handler", None)
+        return handler if isinstance(handler, str) and handler else None
+
+    @staticmethod
+    def _is_gvisor_handler(handler: str) -> bool:
+        normalized = handler.lower()
+        return normalized == "runsc" or normalized.startswith("runsc-")
+
     def _get_snapshot_cr(self, snapshot_name: str, *, namespace: str | None = None) -> Optional[dict]:
         return self._k8s_client.get_custom_object(
             group=_GROUP,
@@ -207,7 +417,13 @@ class KubernetesSnapshotRuntime:
             name=snapshot_name,
         )
 
-    def _validate_existing_source(self, snapshot: Optional[dict], sandbox_id: str) -> Optional[SnapshotRuntimeStatus]:
+    def _validate_existing_source(
+        self,
+        snapshot: Optional[dict],
+        sandbox_id: str,
+        *,
+        require_source: bool = False,
+    ) -> Optional[SnapshotRuntimeStatus]:
         if snapshot is None:
             return None
 
@@ -216,7 +432,9 @@ class KubernetesSnapshotRuntime:
             if isinstance(snapshot, dict)
             else None
         )
-        if existing_sandbox in (None, sandbox_id):
+        if existing_sandbox == sandbox_id or (
+            existing_sandbox is None and not require_source
+        ):
             return None
 
         return SnapshotRuntimeStatus(
@@ -237,11 +455,20 @@ class KubernetesSnapshotRuntime:
 
             if time.monotonic() >= deadline:
                 return SnapshotRuntimeStatus(
-                    state=SnapshotState.FAILED,
+                    state=(
+                        SnapshotState.CREATING
+                        if self._postgresql_ha_enabled
+                        else SnapshotState.FAILED
+                    ),
                     reason="snapshot_runtime_timeout",
                     message=(
                         "Timed out waiting for Kubernetes SandboxSnapshot "
-                        f"{build_public_snapshot_name(snapshot_id)} to complete."
+                        f"{build_public_snapshot_name(snapshot_id)} to complete"
+                        + (
+                            "; the PostgreSQL record remains Creating for recovery."
+                            if self._postgresql_ha_enabled
+                            else "."
+                        )
                     ),
                 )
 
@@ -252,6 +479,16 @@ class KubernetesSnapshotRuntime:
         phase = status.get("phase")
 
         if phase == "Succeed":
+            if status.get("format") == "qemu-v1":
+                return SnapshotRuntimeStatus(
+                    state=SnapshotState.FAILED,
+                    reason="snapshot_restore_qemu_not_supported",
+                    message=(
+                        "QEMU VMState restore is currently supported only by "
+                        "BatchSandbox pause/resume; the public snapshot API does "
+                        "not yet persist the complete Pod template restore plan."
+                    ),
+                )
             image_status = self._select_restore_image(status.get("containers") or [])
             if image_status.state == SnapshotState.FAILED:
                 return image_status
@@ -316,6 +553,56 @@ class KubernetesSnapshotRuntime:
         return (
             "snapshot_runtime_failed",
             "Kubernetes snapshot creation failed.",
+        )
+
+    def _observe_before_create(
+        self,
+        snapshot_name: str,
+        *,
+        namespace: str,
+    ) -> Optional[dict] | SnapshotRuntimeStatus:
+        try:
+            return self._get_snapshot_cr(snapshot_name, namespace=namespace)
+        except ApiException as exc:
+            if not self._is_retryable_api_error(exc):
+                return SnapshotRuntimeStatus(
+                    state=SnapshotState.FAILED,
+                    reason="snapshot_runtime_inspect_failed",
+                    message=(
+                        f"Failed to observe Kubernetes SandboxSnapshot {snapshot_name} "
+                        f"before create: {exc}"
+                    ),
+                )
+            logger.warning(
+                "Failed to observe Kubernetes SandboxSnapshot %s before create: %s",
+                snapshot_name,
+                exc,
+            )
+            return SnapshotRuntimeStatus(
+                state=SnapshotState.CREATING,
+                reason="snapshot_runtime_inspect_failed",
+                message=(
+                    f"Failed to observe Kubernetes SandboxSnapshot {snapshot_name} before create: {exc}"
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Failed to observe Kubernetes SandboxSnapshot %s before create: %s",
+                snapshot_name,
+                exc,
+            )
+            return SnapshotRuntimeStatus(
+                state=SnapshotState.CREATING,
+                reason="snapshot_runtime_inspect_failed",
+                message=(
+                    f"Failed to observe Kubernetes SandboxSnapshot {snapshot_name} before create: {exc}"
+                ),
+            )
+
+    @staticmethod
+    def _is_retryable_api_error(exc: ApiException) -> bool:
+        return exc.status in (408, 429) or (
+            isinstance(exc.status, int) and exc.status >= 500
         )
 
 

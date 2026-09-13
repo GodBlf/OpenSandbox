@@ -257,6 +257,39 @@ For async pools, pass a `redis.asyncio` client to `AsyncRedisPoolStateStore`.
   does not bypass shared state.
 :::
 
+## Lifecycle Hooks
+
+Pass a `SandboxLifecycle` when creating a sandbox. `pre_start` completes before the entrypoint starts, while `periodic` hooks run on their schedules after startup.
+
+```python
+from opensandbox.models.sandboxes import (
+    LifecycleHook,
+    PeriodicLifecycleHook,
+    SandboxLifecycle,
+)
+
+sandbox = await Sandbox.create(
+    "ubuntu:24.04",
+    connection_config=config,
+    lifecycle=SandboxLifecycle(
+        pre_start=LifecycleHook(
+            command=["sh", "-c", "echo ready > /tmp/prestart.done"],
+            timeout_seconds=120,
+        ),
+        periodic=[
+            PeriodicLifecycleHook(
+                name="checkpoint",
+                schedule="@every 5m",
+                command=["sh", "-c", "date -u >> /tmp/checkpoints.log"],
+                timeout_seconds=120,
+            )
+        ],
+    ),
+)
+```
+
+The Server validates `timeout_seconds`; `pre_start` accepts 1–10800 seconds, while `periodic` accepts 1–300 seconds. Both default to 60 seconds when omitted. See [Lifecycle Hooks](/guides/lifecycle-hooks) for timing, failure behavior, and provider limitations.
+
 ## Usage Examples
 
 ### 1. Lifecycle Management
@@ -296,7 +329,14 @@ manual = await Sandbox.create(
 
 ### 2. Custom Health Check
 
-Define custom logic to determine if the sandbox is healthy. This overrides the default ping check.
+Readiness checks during creation, connection, and resume fail immediately when the
+health endpoint returns HTTP 401 or 403. The SDK raises `SandboxApiException`
+with the original status, error details, and request ID instead of waiting for
+`SandboxReadyTimeoutException`. Check the endpoint credentials or permissions
+before retrying. Transient health failures retain their existing polling behavior;
+`is_healthy()` still returns `False` for a failed built-in health probe.
+
+Define custom logic to determine if the sandbox is healthy. This overrides the default ping check. Synchronous checks must set their own timeouts because the SDK cannot interrupt them; asynchronous checks must not block the event loop or suppress cancellation.
 
 ```python
 async def custom_health_check(sbx: Sandbox) -> bool:
@@ -347,6 +387,15 @@ result = await sandbox.commands.run(
     handlers=handlers
 )
 ```
+
+To execute a native program without shell parsing, pass an argument list. On Linux,
+this example prints literal `$HOME` and keeps `hello world` as one argument:
+
+```python
+result = await sandbox.commands.run(["printf", "%s\n", "$HOME", "hello world"])
+```
+
+Native argv execution requires an updated execd. See [command execution modes](/components/execd#command-execution) for executable lookup and platform behavior.
 
 ### 4. Comprehensive File Operations
 
@@ -421,7 +470,7 @@ The `ConnectionConfig` class manages API server connection settings.
 | `request_timeout` | Timeout for API requests                   | 30 seconds                   | -                      |
 | `debug`           | Enable debug logging for HTTP requests     | `False`                      | -                      |
 | `headers`         | Custom HTTP headers                        | Empty                        | -                      |
-| `transport`       | Shared httpx transport (pool/proxy/retry)  | SDK-created per instance     | -                      |
+| `transport`       | Shared httpx transport (pool/proxy/retry); custom transports must honor request timeouts  | SDK-created per instance     | -                      |
 | `retry_policy`    | Automatic retry policy for non-streaming requests (see [Automatic retries](#_2-automatic-retries)) | Enabled (`RetryPolicy()`) | -                 |
 | `use_server_proxy` | Use sandbox server as proxy for execd/endpoint requests (e.g. when client cannot reach the sandbox directly) | `False` | -                      |
 | `disable_metrics` | Disable SDK create-latency telemetry (see [SDK Telemetry](/guides/sdk-telemetry)) | `False` | `OPENSANDBOX_DISABLE_METRICS` |

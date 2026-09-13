@@ -59,9 +59,9 @@ IMAGE_COMMITTER_IMG ?= image-committer:dev
 # SNAPSHOT_REGISTRY defines the OCI registry used by the controller for snapshot images.
 SNAPSHOT_REGISTRY ?= docker-registry.default.svc.cluster.local:5000
 
-# Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
+# Go installs tools in GOBIN, or in the first GOPATH entry's bin directory.
 ifeq (,$(shell go env GOBIN))
-GOBIN=$(shell go env GOPATH)/bin
+GOBIN=$(shell go env GOPATH | cut -d: -f1)/bin
 else
 GOBIN=$(shell go env GOBIN)
 endif
@@ -132,47 +132,45 @@ E2E_TIMEOUT ?= 60m
 
 .PHONY: install-kind
 install-kind: ## Install Kind using go install if not already installed
-	@if command -v kind >/dev/null 2>&1; then \
-		echo "Kind is already installed: $$(kind version)"; \
-	else \
+	@if ! command -v "$(KIND)" >/dev/null 2>&1; then \
 		echo "Installing Kind..."; \
-		go install sigs.k8s.io/kind@v0.20.0 && \
-		echo "Kind installed successfully: $$(kind version)"; \
+		GOBIN="$(GOBIN)" go install sigs.k8s.io/kind@v0.20.0; \
 	fi
+	@"$(KIND)" version
 
 .PHONY: setup-test-e2e
 setup-test-e2e: install-kind ## Set up a Kind cluster for e2e tests if it does not exist
-	@case "$$($(KIND) get clusters 2>/dev/null || echo '')" in \
+	@case "$$("$(KIND)" get clusters 2>/dev/null || echo '')" in \
 		*"$(KIND_CLUSTER)"*) \
 			echo "Kind cluster '$(KIND_CLUSTER)' already exists. Skipping creation." ;; \
 		*) \
 			echo "Creating Kind cluster '$(KIND_CLUSTER)' with Kubernetes version $(KIND_K8S_VERSION)..."; \
-			$(KIND) create cluster --name $(KIND_CLUSTER) --image kindest/node:$(KIND_K8S_VERSION) ;; \
+			"$(KIND)" create cluster --name $(KIND_CLUSTER) --image kindest/node:$(KIND_K8S_VERSION) ;; \
 	esac
 
 .PHONY: test-e2e-core
 test-e2e-core: setup-test-e2e manifests generate fmt vet ## Run only Core-labelled e2e tests
-	CONTROLLER_IMG=$(CONTROLLER_IMG) TASK_EXECUTOR_IMG=$(TASK_EXECUTOR_IMG) \
+	CONTROLLER_IMG=$(CONTROLLER_IMG) TASK_EXECUTOR_IMG=$(TASK_EXECUTOR_IMG) E2E_LABEL_FILTER=Core \
 		KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=Core -timeout $(E2E_TIMEOUT) $(GINKGO_ARGS)
 	$(MAKE) cleanup-test-e2e
 
 .PHONY: test-e2e-pause-resume
 test-e2e-pause-resume: setup-test-e2e manifests generate fmt vet ## Run only PauseResume-labelled e2e tests
-	CONTROLLER_IMG=$(CONTROLLER_IMG) TASK_EXECUTOR_IMG=$(TASK_EXECUTOR_IMG) \
+	CONTROLLER_IMG=$(CONTROLLER_IMG) TASK_EXECUTOR_IMG=$(TASK_EXECUTOR_IMG) E2E_LABEL_FILTER=PauseResume \
 		KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=PauseResume -timeout $(E2E_TIMEOUT) $(GINKGO_ARGS)
 	$(MAKE) cleanup-test-e2e
 
 .PHONY: test-e2e-main
 test-e2e-main: setup-test-e2e manifests generate fmt vet 
-	CONTROLLER_IMG=$(CONTROLLER_IMG) TASK_EXECUTOR_IMG=$(TASK_EXECUTOR_IMG) \
+	CONTROLLER_IMG=$(CONTROLLER_IMG) TASK_EXECUTOR_IMG=$(TASK_EXECUTOR_IMG) E2E_LABEL_FILTER= \
 		KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e/ -v -ginkgo.v -timeout $(E2E_TIMEOUT) $(GINKGO_ARGS)
 	$(MAKE) cleanup-test-e2e
 
 .PHONY: test-e2e
 test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind. Use GINKGO_ARGS to pass additional arguments.
-	CONTROLLER_IMG=$(CONTROLLER_IMG) TASK_EXECUTOR_IMG=$(TASK_EXECUTOR_IMG) \
+	CONTROLLER_IMG=$(CONTROLLER_IMG) TASK_EXECUTOR_IMG=$(TASK_EXECUTOR_IMG) E2E_LABEL_FILTER= \
 		KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e/ -v -ginkgo.v -timeout $(E2E_TIMEOUT) $(GINKGO_ARGS)
-	CONTROLLER_IMG=$(CONTROLLER_IMG) TASK_EXECUTOR_IMG=$(TASK_EXECUTOR_IMG) \
+	CONTROLLER_IMG=$(CONTROLLER_IMG) TASK_EXECUTOR_IMG=$(TASK_EXECUTOR_IMG) E2E_LABEL_FILTER= \
 		KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e_task/ -v -ginkgo.v -timeout $(E2E_TIMEOUT) $(GINKGO_ARGS)
 	$(MAKE) cleanup-test-e2e
 	$(MAKE) test-gvisor CONTROLLER_IMG=$(CONTROLLER_IMG) TASK_EXECUTOR_IMG=$(TASK_EXECUTOR_IMG)
@@ -180,7 +178,12 @@ test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expect
 
 .PHONY: cleanup-test-e2e
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
-	@$(KIND) delete cluster --name $(KIND_CLUSTER)
+	@"$(KIND)" delete cluster --name $(KIND_CLUSTER)
+
+
+.PHONY: test-e2e-qemu
+test-e2e-qemu: ## Run QEMU-in-runc VMState pause/resume E2E (requires Linux amd64 and /dev/kvm)
+	bash test/e2e_qemu/run.sh
 
 # Common E2E setup targets - install CRDs and controller for any Kind cluster
 .PHONY: install-e2e-deps
@@ -221,7 +224,7 @@ setup-gvisor: download-gvisor ## Set up Kind cluster with gVisor (runsc) for e2e
 		export GVISOR_KIND_IMAGE=$(GVISOR_KIND_IMAGE) && \
 		export PWD=$$(pwd) && \
 		envsubst < test/e2e_runtime/gvisor/testdata/gvisor.yaml.tmpl | \
-		$(KIND) create cluster --config -
+		"$(KIND)" create cluster --config -
 	@echo "Creating runsc.toml on Kind nodes..."
 	@for node in $$(docker ps --filter "name=$(GVISOR_KIND_CLUSTER)-" --format "{{.Names}}"); do \
 		docker exec $$node sh -c 'mkdir -p /etc/containerd && echo "[runsc]" > /etc/containerd/runsc.toml && echo "  platform = \"ptrace\"" >> /etc/containerd/runsc.toml'; \
@@ -229,14 +232,14 @@ setup-gvisor: download-gvisor ## Set up Kind cluster with gVisor (runsc) for e2e
 
 .PHONY: cleanup-gvisor
 cleanup-gvisor: ## Tear down gVisor Kind cluster
-	@$(KIND) delete cluster --name $(GVISOR_KIND_CLUSTER) 2>/dev/null || true
+	@"$(KIND)" delete cluster --name $(GVISOR_KIND_CLUSTER) 2>/dev/null || true
 
 # install-gvisor-deps installs CRDs and controller for gVisor tests
 .PHONY: install-gvisor-deps
 install-gvisor-deps:
 	@echo "Building and loading controller image into gVisor Kind cluster..."
 	@$(MAKE) docker-build-controller CONTROLLER_IMG=$(CONTROLLER_IMG)
-	@$(KIND) load docker-image --name $(GVISOR_KIND_CLUSTER) $(CONTROLLER_IMG)
+	@"$(KIND)" load docker-image --name $(GVISOR_KIND_CLUSTER) $(CONTROLLER_IMG)
 	@$(MAKE) install-e2e-deps CONTROLLER_IMG=$(CONTROLLER_IMG)
 
 .PHONY: test-gvisor
@@ -391,7 +394,7 @@ $(LOCALBIN):
 
 ## Tool Binaries
 KUBECTL ?= kubectl
-KIND ?= kind
+KIND ?= $(or $(shell command -v kind 2>/dev/null),$(GOBIN)/kind)
 KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest

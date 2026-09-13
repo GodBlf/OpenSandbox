@@ -31,9 +31,9 @@ from opensandbox.exceptions import (
     InvalidArgumentException,
     SandboxException,
     SandboxInternalException,
-    SandboxReadyTimeoutException,
 )
 from opensandbox.internal.lifecycle_metrics import report_sandbox_create_metric
+from opensandbox.internal.readiness import ReadinessBudget
 from opensandbox.models.diagnostics import DiagnosticContent
 from opensandbox.models.sandboxes import (
     CreateSnapshotRequest,
@@ -44,6 +44,7 @@ from opensandbox.models.sandboxes import (
     SandboxEndpoint,
     SandboxImageSpec,
     SandboxInfo,
+    SandboxLifecycle,
     SandboxMetrics,
     SandboxRenewResponse,
     SnapshotInfo,
@@ -71,6 +72,9 @@ class Sandbox:
     This class provides a comprehensive interface for interacting with containerized sandbox
     environments, combining lifecycle management with high-level operations for file system
     access, command execution, and real-time monitoring.
+
+    Custom health checks and transports must not block the event loop. Readiness
+    timeout requests cancellation, but custom code that suppresses it may continue.
 
     Key Features:
 
@@ -385,7 +389,6 @@ class Sandbox:
         issues in context manager cleanup.
         """
         try:
-            # Close transport only when SDK owns it (default transport).
             await self._connection_config.close_transport_if_owned()
             logger.debug(f"Closed resources for sandbox {self.id}")
         except Exception as e:
@@ -426,6 +429,12 @@ class Sandbox:
         except Exception:
             return False
 
+    async def _probe_health(self) -> bool:
+        """Probe readiness without hiding authentication failures."""
+        if self._custom_health_check:
+            return await self._custom_health_check(self)
+        return await self._health_service.ping(self.id)
+
     async def check_ready(
         self,
         timeout: timedelta,
@@ -442,53 +451,21 @@ class Sandbox:
             SandboxReadyTimeoutException: if health check doesn't pass within timeout
             SandboxException: if health check fails
         """
-        logger.info(
-            f"Waiting for sandbox {self.id} to pass health check (timeout: {timeout.total_seconds()}s)"
-        )
+        await self._check_ready(ReadinessBudget(timeout, polling_interval))
 
-        deadline = time.time() + timeout.total_seconds()
-        attempt = 0
-        last_exception: Exception | None = None
-
-        while time.time() < deadline:
-            attempt += 1
-            logger.debug(f"Health check attempt #{attempt} for sandbox {self.id}")
-
-            try:
-                is_healthy = await self.is_healthy()
-                if is_healthy:
-                    logger.info(
-                        f"Sandbox {self.id} passed health check after {attempt} attempts"
-                    )
-                    return
-                last_exception = None
-                logger.debug(f"Health check attempt #{attempt} returned false")
-            except Exception as e:
-                last_exception = e
-                is_healthy = False
-                logger.debug(
-                    f"Health check attempt #{attempt} failed with exception: {e}"
-                )
-
-            if not is_healthy:
-                await asyncio.sleep(polling_interval.total_seconds())
-
-        error_detail = (
-            f"Last error: {last_exception}"
-            if last_exception
-            else "Health check returned false continuously"
-        )
-        connection_detail = (
+    async def _check_ready(self, budget: ReadinessBudget) -> None:
+        context = (
             f"ConnectionConfig(domain={self.connection_config.get_domain()}, "
             f"use_server_proxy={self.connection_config.use_server_proxy})"
         )
-        final_message = (
-            f"Sandbox health check timed out after {timeout.total_seconds()}s "
-            f"({attempt} attempts). {error_detail}. {connection_detail}."
+        # Fast-fail on 401/403 applies only to the built-in /ping probe: a custom
+        # health_check may legitimately poll an app whose authorization becomes
+        # available asynchronously, so it keeps the retry-until-deadline behavior.
+        await budget.health(
+            self._probe_health,
+            context,
+            auth_fail_fast=self._custom_health_check is None,
         )
-
-        logger.error(final_message)
-        raise SandboxReadyTimeoutException(final_message)
 
     @classmethod
     async def create(
@@ -514,6 +491,7 @@ class Sandbox:
         health_check: Callable[["Sandbox"], Awaitable[bool]] | None = None,
         health_check_polling_interval: timedelta = timedelta(milliseconds=200),
         skip_health_check: bool = False,
+        lifecycle: SandboxLifecycle | None = None,
     ) -> "Sandbox":
         """
         Create a new sandbox instance with the specified configuration.
@@ -538,6 +516,7 @@ class Sandbox:
             health_check: Custom async health check function
             health_check_polling_interval: Time between health check attempts
             skip_health_check: If True, do NOT wait for sandbox readiness/health; returned instance may not be ready yet.
+            lifecycle: Optional pre-start and periodic lifecycle hooks.
 
         Returns:
             Fully configured and ready Sandbox instance
@@ -589,6 +568,7 @@ class Sandbox:
                 "secure_access": secure_access,
                 "snapshot_id": snapshot_id,
                 "resource_requests": resource_requests,
+                "lifecycle": lifecycle,
             }
             if read_only_root_filesystem is not None:
                 create_kwargs["read_only_root_filesystem"] = read_only_root_filesystem
@@ -686,9 +666,9 @@ class Sandbox:
             sandbox_id: ID of the existing sandbox
             connection_config: Connection configuration
             health_check: Custom async health check function
-            connect_timeout: Max time to wait for sandbox readiness/health after connecting.
+            connect_timeout: Total budget for endpoint publication and health checks.
             health_check_polling_interval: Polling interval used while waiting for readiness/health.
-            skip_health_check: If True, do NOT wait for readiness/health; returned instance may not be ready yet.
+            skip_health_check: Skip health checks; endpoint publication is still awaited.
 
         Returns:
             Connected Sandbox instance
@@ -699,7 +679,6 @@ class Sandbox:
         """
         if not sandbox_id:
             raise InvalidArgumentException("Sandbox ID must be specified")
-        # Accept any string identifier.
         sandbox_id = str(sandbox_id)
 
         config = (connection_config or ConnectionConfig()).with_transport_if_missing()
@@ -709,14 +688,13 @@ class Sandbox:
 
         try:
             sandbox_service = factory.create_sandbox_service()
-            execd_endpoint, egress_endpoint = await asyncio.gather(
-                sandbox_service.get_sandbox_endpoint(
-                    sandbox_id, DEFAULT_EXECD_PORT, config.use_server_proxy
-                ),
-                sandbox_service.get_sandbox_endpoint(
-                    sandbox_id, DEFAULT_EGRESS_PORT, config.use_server_proxy
-                ),
-            )
+            budget = ReadinessBudget(connect_timeout, health_check_polling_interval)
+            execd_endpoint = await budget.endpoint(lambda: sandbox_service.get_sandbox_endpoint(
+                sandbox_id, DEFAULT_EXECD_PORT, config.use_server_proxy
+            ))
+            egress_endpoint = await budget.endpoint(lambda: sandbox_service.get_sandbox_endpoint(
+                sandbox_id, DEFAULT_EGRESS_PORT, config.use_server_proxy
+            ))
 
             sandbox = cls(
                 sandbox_id=sandbox_id,
@@ -735,9 +713,7 @@ class Sandbox:
             )
 
             if not skip_health_check:
-                await sandbox.check_ready(
-                    connect_timeout, health_check_polling_interval
-                )
+                await sandbox._check_ready(budget)
             else:
                 logger.info(
                     f"Connected to sandbox {sandbox_id} (skip_health_check=true, sandbox may not be ready yet)"
@@ -745,9 +721,9 @@ class Sandbox:
 
             logger.info(f"Connected to sandbox {sandbox_id}")
             return sandbox
-        except Exception as e:
+        except BaseException as e:
             await config.close_transport_if_owned()
-            if isinstance(e, SandboxException):
+            if not isinstance(e, Exception) or isinstance(e, SandboxException):
                 raise
             logger.error("Unexpected exception during sandbox connection", exc_info=e)
             raise SandboxInternalException(f"Failed to connect to sandbox: {e}") from e
@@ -773,13 +749,12 @@ class Sandbox:
             sandbox_id: ID of the paused sandbox to resume.
             connection_config: Connection configuration (shared transport, headers, timeouts).
             health_check: Optional custom async health check function (falls back to ping).
-            resume_timeout: Max time to wait for sandbox readiness/health after resuming.
+            resume_timeout: Total budget for endpoint publication and health checks after resuming.
             health_check_polling_interval: Polling interval used while waiting for readiness/health.
-            skip_health_check: If True, do NOT wait for readiness/health; returned instance may not be ready yet.
+            skip_health_check: Skip health checks; endpoint publication is still awaited.
         """
         if not sandbox_id:
             raise InvalidArgumentException("Sandbox ID must be specified")
-        # Accept any string identifier.
         sandbox_id = str(sandbox_id)
 
         config = (connection_config or ConnectionConfig()).with_transport_if_missing()
@@ -791,14 +766,13 @@ class Sandbox:
             sandbox_service = factory.create_sandbox_service()
             await sandbox_service.resume_sandbox(sandbox_id)
 
-            execd_endpoint, egress_endpoint = await asyncio.gather(
-                sandbox_service.get_sandbox_endpoint(
-                    sandbox_id, DEFAULT_EXECD_PORT, config.use_server_proxy
-                ),
-                sandbox_service.get_sandbox_endpoint(
-                    sandbox_id, DEFAULT_EGRESS_PORT, config.use_server_proxy
-                ),
-            )
+            budget = ReadinessBudget(resume_timeout, health_check_polling_interval)
+            execd_endpoint = await budget.endpoint(lambda: sandbox_service.get_sandbox_endpoint(
+                sandbox_id, DEFAULT_EXECD_PORT, config.use_server_proxy
+            ))
+            egress_endpoint = await budget.endpoint(lambda: sandbox_service.get_sandbox_endpoint(
+                sandbox_id, DEFAULT_EGRESS_PORT, config.use_server_proxy
+            ))
 
             sandbox = cls(
                 sandbox_id=sandbox_id,
@@ -817,16 +791,16 @@ class Sandbox:
             )
 
             if not skip_health_check:
-                await sandbox.check_ready(resume_timeout, health_check_polling_interval)
+                await sandbox._check_ready(budget)
             else:
                 logger.info(
                     f"Resumed sandbox {sandbox_id} (skip_health_check=true, sandbox may not be ready yet)"
                 )
 
             return sandbox
-        except Exception as e:
+        except BaseException as e:
             await config.close_transport_if_owned()
-            if isinstance(e, SandboxException):
+            if not isinstance(e, Exception) or isinstance(e, SandboxException):
                 raise
             logger.error("Unexpected exception during sandbox resume", exc_info=e)
             raise SandboxInternalException(f"Failed to resume sandbox: {e}") from e

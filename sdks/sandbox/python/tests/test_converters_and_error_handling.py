@@ -50,10 +50,13 @@ from opensandbox.exceptions import (
 from opensandbox.models.execd import RunCommandOpts
 from opensandbox.models.sandboxes import (
     CredentialProxyConfig,
+    LifecycleHook,
     NetworkPolicy,
     NetworkRule,
+    PeriodicLifecycleHook,
     PlatformSpec,
     SandboxImageSpec,
+    SandboxLifecycle,
 )
 
 
@@ -507,6 +510,16 @@ def test_execution_converter_to_api_run_command_request() -> None:
     assert "cwd" not in d4
 
 
+    argv = ["tool", "", "a b", "$HOME", "x'y", "中文"]
+    native = ExecutionConverter.to_api_run_command_request(
+        argv, RunCommandOpts(background=True, working_directory="$DIR", envs={"DIR": "/tmp"})
+    ).to_dict()
+    assert native == {"argv": argv, "background": True, "cwd": "$DIR", "envs": {"DIR": "/tmp"}}
+    for invalid in ([], [""], ["tool", "\0"], ["tool", None], ("tool", "arg"), None, 123):
+        with pytest.raises(InvalidArgumentException):
+            ExecutionConverter.to_api_run_command_request(invalid, RunCommandOpts())
+
+
 def test_run_command_opts_validates_gid_requires_uid() -> None:
     with pytest.raises(ValueError, match="uid is required when gid is provided"):
         RunCommandOpts(gid=1000)
@@ -559,6 +572,19 @@ def test_sandbox_model_converter_to_api_create_request_and_renew_tz() -> None:
         extensions={},
         volumes=None,
         credential_proxy=CredentialProxyConfig(enabled=True),
+        lifecycle=SandboxLifecycle(
+            preStart=LifecycleHook(
+                command=["/opt/hooks/restore.sh"],
+                timeoutSeconds=30,
+            ),
+            periodic=[
+                PeriodicLifecycleHook(
+                    name="checkpoint",
+                    schedule="@hourly",
+                    command=["/opt/hooks/checkpoint.sh"],
+                )
+            ],
+        ),
     )
     d = req.to_dict()
     assert d["image"]["uri"] == "python:3.11"
@@ -569,9 +595,59 @@ def test_sandbox_model_converter_to_api_create_request_and_renew_tz() -> None:
     assert d["networkPolicy"]["defaultAction"] == "deny"
     assert d["networkPolicy"]["egress"] == [{"action": "allow", "target": "pypi.org"}]
     assert d["credentialProxy"] == {"enabled": True}
+    assert d["lifecycle"] == {
+        "preStart": {
+            "command": ["/opt/hooks/restore.sh"],
+            "timeoutSeconds": 30,
+        },
+        "periodic": [
+            {
+                "name": "checkpoint",
+                "schedule": "@hourly",
+                "command": ["/opt/hooks/checkpoint.sh"],
+            }
+        ],
+    }
 
     renew = SandboxModelConverter.to_api_renew_request(datetime(2025, 1, 1))
     assert renew.expires_at.tzinfo is timezone.utc
+
+
+def test_sandbox_model_converter_omits_empty_lifecycle() -> None:
+    req = SandboxModelConverter.to_api_create_sandbox_request(
+        spec=SandboxImageSpec("python:3.11"),
+        entrypoint=["python"],
+        env={},
+        metadata={},
+        timeout=None,
+        resource={},
+        platform=None,
+        network_policy=None,
+        extensions={},
+        volumes=None,
+        lifecycle=SandboxLifecycle(),
+    )
+
+    assert "lifecycle" not in req.to_dict()
+
+    req = SandboxModelConverter.to_api_create_sandbox_request(
+        spec=SandboxImageSpec("python:3.11"),
+        entrypoint=["python"],
+        env={},
+        metadata={},
+        timeout=None,
+        resource={},
+        platform=None,
+        network_policy=None,
+        extensions={},
+        volumes=None,
+        lifecycle=SandboxLifecycle(
+            preStart=LifecycleHook(command=["true"]),
+            periodic=[],
+        ),
+    )
+
+    assert req.to_dict()["lifecycle"] == {"preStart": {"command": ["true"]}}
 
 
 def test_platform_spec_accepts_windows() -> None:
@@ -618,6 +694,66 @@ def test_sandbox_model_converter_snapshot_restore_request() -> None:
     assert "image" not in dumped
     assert "entrypoint" not in dumped
 
+def test_sandbox_model_converter_to_api_volume_skips_unset_fields() -> None:
+    from opensandbox.api.lifecycle.types import UNSET
+    from opensandbox.models.sandboxes import Volume
+
+    # Inject UNSET into backend fields (bypassing Pydantic validation) to
+    # simulate a domain Volume carrying Unset values from an API round-trip.
+    volume = Volume.model_construct(
+        name="workdir",
+        mount_path="/mnt/work",
+        read_only=False,
+        host=UNSET,
+        pvc=UNSET,
+        ossfs=UNSET,
+        sub_path=UNSET,
+    )
+
+    api_volume = SandboxModelConverter.to_api_volume(volume)
+    dumped = api_volume.to_dict()
+    assert dumped == {"name": "workdir", "mountPath": "/mnt/work", "readOnly": False}
+    assert "host" not in dumped
+    assert "pvc" not in dumped
+    assert "ossfs" not in dumped
+    assert "subPath" not in dumped
+
+def test_sandbox_model_converter_to_api_volume_maps_backends() -> None:
+    from opensandbox.models.sandboxes import OSSFS, PVC, Host, Volume
+
+    volume = Volume(
+        name="workdir",
+        host=Host(path="/data/opensandbox"),
+        mount_path="/mnt/work",
+        sub_path="sub",
+    )
+    dumped = SandboxModelConverter.to_api_volume(volume).to_dict()
+    assert dumped["host"] == {"path": "/data/opensandbox"}
+    assert dumped["subPath"] == "sub"
+    assert "pvc" not in dumped
+    assert "ossfs" not in dumped
+
+    pvc_volume = Volume(
+        name="models",
+        pvc=PVC(claim_name="shared-models-pvc"),
+        mount_path="/mnt/models",
+        read_only=True,
+    )
+    pvc_dumped = SandboxModelConverter.to_api_volume(pvc_volume).to_dict()
+    assert pvc_dumped["pvc"]["claimName"] == "shared-models-pvc"
+    assert pvc_dumped["readOnly"] is True
+
+    ossfs_volume = Volume(
+        name="oss", ossfs=OSSFS(
+            bucket="b",
+            endpoint="oss-cn-hangzhou.aliyuncs.com",
+            accessKeyId="ak",
+            accessKeySecret="sk",
+        ),
+        mount_path="/mnt/oss",
+    )
+    ossfs_dumped = SandboxModelConverter.to_api_volume(ossfs_volume).to_dict()
+    assert ossfs_dumped["ossfs"]["bucket"] == "b"
 
 def test_sandbox_model_converter_maps_platform_from_create_response() -> None:
     from opensandbox.api.lifecycle.models.create_sandbox_response import (

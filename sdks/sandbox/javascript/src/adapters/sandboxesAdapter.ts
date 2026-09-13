@@ -136,11 +136,34 @@ export class SandboxesAdapter implements Sandboxes {
     } as SandboxInfo;
   }
 
-  async createSandbox(req: CreateSandboxRequest): Promise<CreateSandboxResponse> {
+  async createSandbox(
+    req: CreateSandboxRequest,
+    signal?: AbortSignal,
+  ): Promise<CreateSandboxResponse> {
     // Make the OpenAPI contract explicit so backend schema changes surface quickly.
-    const body: ApiCreateSandboxRequest = req as unknown as ApiCreateSandboxRequest;
+    const normalizedRequest = { ...req };
+    const lifecycle = normalizedRequest.lifecycle;
+    if (lifecycle) {
+      const normalizedLifecycle = { ...lifecycle };
+      if (Array.isArray(normalizedLifecycle.periodic) && normalizedLifecycle.periodic.length === 0) {
+        delete normalizedLifecycle.periodic;
+      }
+      for (const [key, value] of Object.entries(normalizedLifecycle)) {
+        if (value === null || value === undefined) delete normalizedLifecycle[key];
+      }
+      const hasConfiguredHook = Object.keys(normalizedLifecycle).length > 0;
+      if (hasConfiguredHook) {
+        normalizedRequest.lifecycle = normalizedLifecycle;
+      } else {
+        delete normalizedRequest.lifecycle;
+      }
+    } else {
+      delete normalizedRequest.lifecycle;
+    }
+    const body: ApiCreateSandboxRequest = normalizedRequest as unknown as ApiCreateSandboxRequest;
     const { data, error, response } = await this.client.POST("/sandboxes", {
       body,
+      signal,
     });
     throwOnOpenApiFetchError({ error, response }, "Create sandbox failed");
     const raw = data as ApiCreateSandboxOk | undefined;
@@ -312,8 +335,22 @@ export class SandboxesAdapter implements Sandboxes {
   async getSandboxEndpoint(
     sandboxId: SandboxId,
     port: number,
-    useServerProxy = false
+    useServerProxy = false,
+    signal?: AbortSignal,
   ): Promise<Endpoint> {
+    signal?.throwIfAborted();
+    if (signal) {
+      const cached = this.endpointCache?.get(sandboxId, port, useServerProxy);
+      if (cached) return cached;
+      const endpoint = await this.fetchSandboxEndpoint(
+        sandboxId,
+        port,
+        useServerProxy,
+        signal,
+      );
+      this.endpointCache?.put(sandboxId, port, useServerProxy, endpoint);
+      return endpoint;
+    }
     if (this.endpointCache) {
       return this.endpointCache.getOrFetch(sandboxId, port, useServerProxy, () =>
         this.fetchSandboxEndpoint(sandboxId, port, useServerProxy)
@@ -325,10 +362,12 @@ export class SandboxesAdapter implements Sandboxes {
   private async fetchSandboxEndpoint(
     sandboxId: SandboxId,
     port: number,
-    useServerProxy: boolean
+    useServerProxy: boolean,
+    signal?: AbortSignal,
   ): Promise<Endpoint> {
     const { data, error, response } = await this.client.GET("/sandboxes/{sandboxId}/endpoints/{port}", {
       params: { path: { sandboxId, port }, query: { use_server_proxy: useServerProxy } },
+      signal,
     });
     throwOnOpenApiFetchError({ error, response }, "Get sandbox endpoint failed");
     const ok = data as ApiEndpointOk | undefined;

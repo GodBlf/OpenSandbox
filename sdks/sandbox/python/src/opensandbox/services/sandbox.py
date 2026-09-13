@@ -34,6 +34,7 @@ from opensandbox.models.sandboxes import (
     SandboxFilter,
     SandboxImageSpec,
     SandboxInfo,
+    SandboxLifecycle,
     SandboxRenewResponse,
     SnapshotFilter,
     SnapshotInfo,
@@ -66,6 +67,7 @@ class Sandboxes(Protocol):
         credential_proxy: CredentialProxyConfig | None = None,
         resource_requests: dict[str, str] | None = None,
         read_only_root_filesystem: bool | None = None,
+        lifecycle: SandboxLifecycle | None = None,
     ) -> SandboxCreateResponse:
         """
         Create a new sandbox with the specified configuration.
@@ -84,6 +86,7 @@ class Sandboxes(Protocol):
             volumes: Optional list of volume mounts for persistent storage.
             secure_access: Whether to enable secured access for sandbox endpoints.
             read_only_root_filesystem: Request a read-only root filesystem for the main container.
+            lifecycle: Optional pre-start and periodic lifecycle hooks.
 
         Returns:
             Sandbox create response

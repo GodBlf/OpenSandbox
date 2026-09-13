@@ -53,7 +53,7 @@ Generated OpenAPI clients live beside handwritten adapters. Generated code handl
 
 The code-interpreter SDKs build on the sandbox SDKs and `execd` code execution APIs. They manage code execution contexts and expose language-oriented code execution helpers.
 
-The official code-interpreter image is under `sandboxes/code-interpreter/`. It provides Python, Java, Node.js, and Go runtimes, and Jupyter kernels for Python, Java, TypeScript/JavaScript, Go, and Bash. Exact language versions are image-controlled and selected through environment variables such as `PYTHON_VERSION`, `JAVA_VERSION`, `NODE_VERSION`, and `GO_VERSION`.
+The official code-interpreter image is maintained in [opensandbox-group/sandbox-images](https://github.com/opensandbox-group/sandbox-images) (previously located under `sandboxes/code-interpreter/`; see [Migration Reference](/reference/code-interpreter-image-migration)). It provides Python, Java, Node.js, and Go runtimes, and Jupyter kernels for Python, Java, TypeScript/JavaScript, Go, and Bash. Exact language versions are image-controlled and selected through environment variables such as `PYTHON_VERSION`, `JAVA_VERSION`, `NODE_VERSION`, and `GO_VERSION`.
 
 ### 1.3 CLI and MCP
 
@@ -161,6 +161,8 @@ When the endpoint is rewritten to a server-proxied URL, the server removes only 
 ingress routing header and preserves other required endpoint headers.
 
 The server proxy supports HTTP and WebSocket traffic and is also integrated with optional renew-on-access behavior. For HTTP responses, it strips hop-by-hop headers and the backend `Server` header while preserving an origin `Date`; the server adds a current `Date` only when the response does not already contain one. A root-relative `Location` value that starts with a single `/` is rebased under the same sandbox proxy route, while absolute URLs, network-path references (`//host/path`), and ordinary path-relative values are forwarded unchanged.
+
+HTTP proxy responses preserve the sandbox service's status code, body, and `Content-Type`, including redirects and backend errors. The generated Server OpenAPI describes `200` and `default` responses with `*/*` and no fixed payload schema because the sandbox service controls the payload. Server-side validation and authentication still apply before forwarding; the explicit `422` validation response remains documented. These response declarations cover both root and `/v1` aliases, with and without a backend path, for every supported HTTP method.
 
 ## 4. Runtime Backends
 

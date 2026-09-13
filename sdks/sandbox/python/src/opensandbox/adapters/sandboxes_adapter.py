@@ -50,6 +50,7 @@ from opensandbox.models.sandboxes import (
     SandboxFilter,
     SandboxImageSpec,
     SandboxInfo,
+    SandboxLifecycle,
     SandboxRenewResponse,
     SnapshotFilter,
     SnapshotInfo,
@@ -142,6 +143,7 @@ class SandboxesAdapter(Sandboxes):
         credential_proxy: CredentialProxyConfig | None = None,
         resource_requests: dict[str, str] | None = None,
         read_only_root_filesystem: bool | None = None,
+        lifecycle: SandboxLifecycle | None = None,
     ) -> SandboxCreateResponse:
         """Create a new sandbox instance with the specified configuration."""
         logger.info(
@@ -167,6 +169,7 @@ class SandboxesAdapter(Sandboxes):
                 snapshot_id=snapshot_id,
                 resource_requests=resource_requests,
                 read_only_root_filesystem=read_only_root_filesystem,
+                lifecycle=lifecycle,
             )
 
             client = await self._get_client()
