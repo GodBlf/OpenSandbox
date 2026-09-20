@@ -58,10 +58,12 @@ VAULT_PAYLOAD = json.dumps(
                     "methods": ["POST"],
                     "paths": ["/v1/chat/*"],
                 },
-                "headers": [{"name": "x-api-key", "value": "secret-api-key"}],
+                "headers": [
+                    {"name": "Authorization", "value": "Bearer synthetic-token"}
+                ],
             }
         ],
-        "redactions": ["secret-api-key"],
+        "redactions": ["Bearer synthetic-token"],
     }
 ).encode("utf-8")
 
@@ -203,14 +205,16 @@ class MitmproxyRuntimeRegressionTest(unittest.TestCase):
         cls._vault.start()
 
         cls._upstream_hits = 0
+        cls._upstream_authorization: str | None = None
         cls._upstream_lock = threading.Lock()
         cls._upstream_hit = threading.Event()
 
         class UpstreamHandler(http.server.BaseHTTPRequestHandler):
             def do_POST(self) -> None:
-                cls._upstream_hit.set()
                 with cls._upstream_lock:
                     cls._upstream_hits += 1
+                    cls._upstream_authorization = self.headers.get("Authorization")
+                cls._upstream_hit.set()
                 self.send_response(204)
                 self.send_header("Content-Length", "0")
                 self.end_headers()
@@ -402,12 +406,16 @@ class MitmproxyRuntimeRegressionTest(unittest.TestCase):
         """Header injection must happen before the streamed body is forwarded;
         the requestheaders hook fires before the 100-continue is sent, so the
         addon log line is observable without uploading the body."""
+        self._upstream_hit.clear()
+        self._upstream_authorization = None
         status, _ = self._send_expect_continue("/v1/chat/completions", LARGE_BODY_SIZE)
         self.assertEqual(100, status)
+        self.assertTrue(self._upstream_hit.wait(10))
+        self.assertEqual("Bearer synthetic-token", self._upstream_authorization)
         self.assertTrue(self._wait_for_log("credential proxy: applied binding="))
         merged = "\n".join(self._log)
-        self.assertIn("headers=x-api-key", merged)
-        self.assertNotIn("secret-api-key", merged)
+        self.assertIn("headers=Authorization", merged)
+        self.assertNotIn("synthetic-token", merged)
         self._assert_no_crash()
 
     def test_lookup_failures_deny_buffered_and_streamed_requests(self) -> None:
