@@ -88,6 +88,9 @@ const (
 	EnvMitmproxyScript           = "OPENSANDBOX_EGRESS_MITMPROXY_SCRIPT"
 	EnvMitmproxyUpstreamTrustDir = "OPENSANDBOX_EGRESS_MITMPROXY_UPSTREAM_TRUST_DIR"
 	EnvMitmproxySslInsecure      = "OPENSANDBOX_EGRESS_MITMPROXY_SSL_INSECURE"
+	// EnvExperimentalRevisionRuntime enables the internal OSEP-0023
+	// per-mitmdump revision bootstrap path. It is not a public interception mode.
+	EnvExperimentalRevisionRuntime = "OPENSANDBOX_EGRESS_EXPERIMENTAL_REVISION_RUNTIME"
 	// EnvMitmproxyExtraPorts (EXPERIMENTAL): extra TCP dports to intercept,
 	// appended to the always-on 80,443. Comma-separated. May change or be
 	// removed without notice.

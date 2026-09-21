@@ -184,6 +184,21 @@ APIs, environment variables, and behavior may change.
 
 Optional transparent HTTPS interception for outbound `80/443` traffic in the sidecar network namespace.
 
+::: warning Internal OSEP-0023 bootstrap gate
+`OPENSANDBOX_EGRESS_EXPERIMENTAL_REVISION_RUNTIME=true` is a development-only,
+sidecar-profile gate for the OSEP-0023 revision protocol. Each mitmdump launch
+or restart receives a fresh authenticated process session and must acknowledge
+the current in-memory Vault snapshot (or the authoritative initial empty state)
+before `/healthz` becomes ready. The default is off.
+
+This gate does **not** enable credential-bound TLS selection. Existing traffic
+still uses intercept-all behavior and the conditional active-Vault lookup;
+connection fencing, Fast Sandbox, and the public `interceptionMode` contract are
+not wired to the revision protocol yet. To prevent the acknowledged bootstrap
+snapshot from diverging from the in-memory Vault, `POST`, `PATCH`, and `DELETE`
+on `/credential-vault` return `503` while this internal gate is enabled.
+:::
+
 Extra ports can be added via the experimental `OPENSANDBOX_EGRESS_MITMPROXY_EXTRA_PORTS` env var (comma-separated, e.g. `8080,8443`), which is appended to the always-on `80,443`. The total port count (including 80/443) must not exceed the iptables `multiport` limit of 15; invalid values fail egress startup rather than silently intercept a subset.
 
 ::: warning Extra ports limitation

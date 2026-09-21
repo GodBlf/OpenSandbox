@@ -827,9 +827,14 @@ acknowledgements. The always-loaded system addon now owns that endpoint only
 when the Go launcher supplies a complete internal per-process session bundle;
 missing configuration keeps it disabled, partial configuration fails startup,
 and addon shutdown fences the receiver and removes its owned socket. The Go
-launcher strips inherited bundle values and can hand off a validated bundle,
-but the current sidecar and fast-sandbox assembly still pass none. An unused Go
-process-session owner now creates a private per-process receiver directory,
+launcher strips inherited bundle values and can hand off a validated bundle.
+Behind an internal development-only gate, the sidecar assembly now gives every
+initial or restarted mitmdump process a fresh session bundle and keeps health
+not-ready until the current in-memory Vault snapshot, or the authoritative
+initial empty state, is exactly acknowledged. Fast Sandbox still passes no
+bundle, and the gate defaults off. Public Vault writes are rejected while the
+internal gate is enabled until mutation acknowledgement is wired. The Go
+process-session owner creates a private per-process receiver directory,
 high-entropy control generation and token, matching launcher bundle, Unix
 transport, and coordinator. It accepts readiness only from an authenticated
 fresh receiver with no active revision. Directory operations stay anchored to a
@@ -842,16 +847,16 @@ prepare/commit transaction, and returns only after the coordinator confirms the
 exact identity. It can also reconcile an indeterminate bootstrap through
 metadata-only readback and exact commit/abort retries: a confirmed identity
 completes bootstrap, while a confirmed non-activation returns to an idle state
-that permits a new candidate. Live launch/restart invocation, connection
-teardown, and the public Vault mutation path remain unwired. Startup/recovery
-and atomic public-store finalization under the shared mutation barrier remain
-integration work.
+that permits a new candidate. Connection teardown and the public Vault mutation
+path remain unwired. Durable recovery intent after a complete sidecar
+replacement and atomic public-store finalization under the shared mutation
+barrier remain integration work.
 
 The proxy-side transaction receiver validates
 generation/epoch/digest identities, stages immutable bytes, and implements
 commit, abort, and metadata-only readback. Its authenticated IPC endpoint is
-conditionally attached to the live addon as described above, but no running
-egress profile supplies a session yet. An unused Go builder now emits
+conditionally attached to the live addon as described above; only the gated
+sidecar startup/restart path supplies a session. The Go builder emits
 the versioned canonical decision payload from a rendered Vault snapshot and
 policy epoch. It derives and sorts HTTPS selectors from the same canonical
 bindings, preserves redaction order, and rejects non-canonical revisions,
@@ -859,10 +864,10 @@ selectors, or rendered credential/redaction coverage. A matching unused Python
 validator now strictly decodes those exact bytes, checks envelope vault/policy
 agreement, recomputes active state and HTTPS selectors from the full bindings,
 and rejects incomplete redaction coverage with a fixed sanitized error. The
-next integration must consume, bootstrap, and reconcile a fresh process session
-during launch/restart before readiness, then add connection fences before
-acknowledging public Vault mutations. Existing request processing continues to
-use the conditional ETag lookup until that integration is ready.
+next integration must place public policy/Vault mutations and revision
+installation under the shared mutation barrier, then add connection fences
+before acknowledging those mutations. Existing request processing continues to
+use the conditional ETag lookup, and no selective TLS decision is enabled yet.
 
 Implementation has started with the internal host-selector algebra and shared
 Go/Python conformance vectors. The control plane owns non-transitional UTS #46
