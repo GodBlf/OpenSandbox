@@ -87,6 +87,19 @@ jobs:
             echo "::endgroup::"
           done
 
+      - name: Smoke-import server wheel before publish
+        run: |
+          set -euo pipefail
+          # Guards against packaging regressions like missing committed files
+          # (hatchling silently drops paths matching VCS ignore patterns, e.g.
+          # the FastPath gRPC stubs vs the blanket `**/generated/**` rule in
+          # the repo-root .gitignore) — the wheel must import standalone.
+          printf '[runtime]\ntype = "docker"\nexecd_image = "opensandbox/execd:latest"\n' > "$HOME/.sandbox.toml"
+          uv venv "$RUNNER_TEMP/server-smoke"
+          uv pip install --quiet --python "$RUNNER_TEMP/server-smoke/bin/python" server/dist/opensandbox_server-*.whl
+          "$RUNNER_TEMP/server-smoke/bin/python" -c "import opensandbox_server.main"
+          rm -f "$HOME/.sandbox.toml"
+
       # The server is standalone; the SDK goes second because the
       # code-interpreter/mcp packages and the CLI depend on the opensandbox
       # SDK (see cli/pyproject.toml: "Release the CLI only after that SDK is
