@@ -403,6 +403,11 @@ type CreateTemplateRequest struct {
 	// Entrypoint is the guest business command (argv); empty defaults to
 	// ["tail", "-f", "/dev/null"].
 	Entrypoint []string `json:"entrypoint,omitempty"`
+	// Env is the environment variables baked into the golden image (injected
+	// as /etc/sandbox-init.env in the guest; literal values only). The source
+	// image's own OCI Config.Env is inherited; an env with the same name
+	// overrides the inherited value. Names must be valid shell variable names.
+	Env map[string]string `json:"env,omitempty"`
 	// Metadata is custom key-value metadata for management, filtering, and
 	// tagging.
 	Metadata map[string]string `json:"metadata,omitempty"`
@@ -426,6 +431,7 @@ type TemplateInfo struct {
 
 	ResourceLimits ResourceLimits     `json:"resourceLimits,omitempty"`
 	Entrypoint     []string           `json:"entrypoint,omitempty"`
+	Env            map[string]string  `json:"env,omitempty"`
 	Metadata       map[string]string  `json:"metadata,omitempty"`
 	Readiness      *TemplateReadiness `json:"readiness,omitempty"`
 }
