@@ -73,6 +73,17 @@ controller:
     requests:
       cpu: 100m
       memory: 128Mi
+  # -- Raw PodSpec fragment (YAML) merged into every SandboxTemplate build
+  # Pod by the controller: whitelisted scheduling fields only (tolerations
+  # appended; affinity and topologySpreadConstraints replaced). Rendered as
+  # the fast-sandbox-builder-pod-template ConfigMap; editing the live
+  # ConfigMap applies to the next build without a rollout.
+  sandboxtemplateBuilderPodSpec: ""
+  # -- Tolerations for the controller pod
+  tolerations: []
+  # -- Image injected as the platform-owned Fastlet Proxy sidecar into
+  # fastlet Pods. Override for clusters that cannot pull from docker.io.
+  fastletProxyImage: fast-sandbox/fastlet-proxy:dev
 
 # Artifact store shared by the controller, the runtime-agent and golden-image
 # builds. Rendered into the fast-sandbox-artifact-store ConfigMap.
@@ -179,10 +190,24 @@ runtime:
   # it with your own coarse selector only if the cluster hosts unrelated
   # node pools.
   nodeSelector: {}
+  # -- Container resources for the DaemonSet. Setting requests matters more
+  # than limits here: without them the pod is BestEffort and is evicted
+  # first under node pressure, taking down the management API for every
+  # fastlet on the node. Limits stay off by default so artifact pulls and
+  # the readiness loop are not throttled or OOM-killed at their spikes.
+  resources:
+    # -- Resources for the firecracker-runtime agent container.
+    agent: {}
+    # -- Resources for the janitor sidecar container.
+    janitor: {}
   # -- Secret carrying the compiled agent registry configuration
   # (registry.json key with artifact-store pull credentials); must be
   # provisioned by the operator.
   registrySecret: fast-sandbox-agent-registry
+  # -- Additional tolerations for the firecracker-runtime DaemonSet pod,
+  # appended to the built-in control-plane toleration. Needed when target
+  # nodes carry infra taints (e.g. sigma.ali resource-pool taints).
+  tolerations: []
   # -- Node hostPath holding per-node Firecracker state (rootfs,
   # snapshots). Each node needs its own directory; do not share across
   # nodes.

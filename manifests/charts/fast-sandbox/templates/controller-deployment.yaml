@@ -33,6 +33,7 @@ spec:
         - --health-probe-bind-address=:5758
         - --fastpath-bind-address=:9090
         - --sandboxtemplate-builder-image={{ .Values.controller.sandboxtemplateBuilderImage }}
+        - --fastlet-proxy-image={{ .Values.controller.fastletProxyImage }}
         # The controller's default namespace for the platform
         # runtime-environment ConfigMap is the upstream-hardcoded
         # fast-sandbox-system; pin it to this chart's system namespace so
@@ -74,11 +75,22 @@ spec:
         - name: artifact-store
           mountPath: /etc/fast-sandbox/artifact-store
           readOnly: true
+        - name: builder-pod-template
+          mountPath: /etc/fast-sandbox/builder-pod-template
+          readOnly: true
       serviceAccountName: fast-sandbox-controller
+      {{- with .Values.controller.tolerations }}
+      tolerations:
+      {{- toYaml . | nindent 6 }}
+      {{- end }}
       volumes:
       - name: artifact-store
         configMap:
           name: fast-sandbox-artifact-store
+          optional: true
+      - name: builder-pod-template
+        configMap:
+          name: fast-sandbox-builder-pod-template
           optional: true
 ---
 apiVersion: policy/v1
