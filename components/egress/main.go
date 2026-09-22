@@ -132,13 +132,13 @@ func main() {
 
 	httpAddr := envOrDefault(constants.EnvEgressHTTPAddr, constants.DefaultEgressServerAddr)
 	mitmGate := mitmproxy.NewHealthGate()
-	policySrv, err := startPolicyServer(proxy, nftMgr, mode, httpAddr, os.Getenv(constants.EnvEgressToken), allowIPs, os.Getenv(constants.EnvEgressPolicyFile), alwaysDeny, alwaysAllow, mitmGate)
+	policySrv, policyHandler, err := startPolicyServer(proxy, nftMgr, mode, httpAddr, os.Getenv(constants.EnvEgressToken), allowIPs, os.Getenv(constants.EnvEgressPolicyFile), alwaysDeny, alwaysAllow, mitmGate)
 	if err != nil {
 		log.Fatalf("failed to start policy server: %v", err)
 	}
 	log.Infof("policy server listening on %s (POST /policy)", httpAddr)
 
-	mitm, err := startMitmproxyTransparentIfEnabled()
+	mitm, err := startMitmproxyTransparentIfEnabled(ctx, policyHandler)
 	if err != nil {
 		log.Fatalf("mitmproxy transparent: %v", err)
 	}

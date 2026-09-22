@@ -47,6 +47,21 @@ Layers 1 and 2 decide *whether* a connection may happen; the transparent MITM la
 
 Status: **experimental but production-usable**. The interception, credential-injection, and CA-delivery mechanism is complete and runs in production settings; what remains experimental is the configuration surface — extra ports and diagnostic switches may still change between releases.
 
+::: warning Internal OSEP-0023 bootstrap gate
+`OPENSANDBOX_EGRESS_EXPERIMENTAL_REVISION_RUNTIME=true` is a development-only,
+sidecar-profile gate for the OSEP-0023 revision protocol. Each mitmdump launch
+or restart receives a fresh authenticated process session and must acknowledge
+the current in-memory Vault snapshot (or the authoritative initial empty state)
+before health becomes ready. The default is off.
+
+This gate does **not** enable credential-bound TLS selection. Existing traffic
+still uses intercept-all behavior and the conditional active-Vault lookup;
+connection fencing, Fast Sandbox, and the public `interceptionMode` contract are
+not wired to the revision protocol yet. To prevent the acknowledged bootstrap
+snapshot from diverging from the in-memory Vault, `POST`, `PATCH`, and `DELETE`
+on `/credential-vault` return `503` while this internal gate is enabled.
+:::
+
 **Trust is delivered, not disabled.** The sidecar exports its CA, and the sandbox bootstrap installs it into the system, NSS, and JDK trust stores on a best-effort basis — clients keep certificate verification on (`curl` without `-k`), and traffic stays encrypted end-to-end from the sandbox's point of view. Images that run Chromium-family browsers should ship the native `certutil` package so the per-user NSS store can be updated.
 
 **What it enables:**
