@@ -62,6 +62,13 @@ The sandbox transitions through both stable and intermediate states:
 
 The Lifecycle API exposes only the coarse-grained sandbox states above. For detailed snapshot progress, inspect the internal `SandboxSnapshot` resource:
 
+Pod termination can continue after the controller reports `Paused`. A resume request
+can be submitted during this interval; the controller waits for the old Pod to be
+removed before recreating its replacement. Pods with a deletion timestamp do not
+contribute new runtime failure conditions, including terminal exit statuses reported
+by Kubernetes during deletion. Failures already recorded on the sandbox remain
+terminal, and failures of replacement Pods are still reported normally.
+
 - `Pending`: snapshot request accepted, waiting to resolve source Pod / create commit Job
 - `Committing`: commit Job is running and pushing snapshot images
 - `Succeed`: snapshot is ready and can be used for the next resume
@@ -73,7 +80,7 @@ The Lifecycle API exposes only the coarse-grained sandbox states above. For deta
 |--|-----------|
 | Root filesystem contents | ✅ Yes — committed as OCI image |
 | Environment variables | ✅ Yes — from BatchSandbox template |
-| Running processes / memory | Rootfs mode: no. Opt-in QEMU-in-runc mode: the QEMU process and Guest memory are restored; other outer processes restart. See [QEMU VMState Snapshots](/kubernetes/qemu-vmstate-snapshots). |
+| Running processes / memory | Rootfs mode: no. Opt-in QEMU-in-runc mode: the QEMU process and Guest memory are restored; other outer processes restart. See [QEMU VMState Snapshots](/guides/qemu-vmstate-snapshots). |
 | Explicit volume mounts | Depends on volume type |
 | Credential Vault entries | No - stored only in egress sidecar memory; re-inject from a trusted control plane after resume |
 
@@ -529,5 +536,4 @@ kubectl logs -n opensandbox-system deployment/opensandbox-controller-manager
 
 - **Documentation**: [OpenSandbox GitHub](https://github.com/opensandbox-group/OpenSandbox)
 - **Issues**: [GitHub Issues](https://github.com/opensandbox-group/OpenSandbox/issues)
-- **Design Document**: [OSEP-0008](https://github.com/opensandbox-group/OpenSandbox/blob/main/oseps/0008-pause-resume-rootfs-snapshot.md)
-- **Kubernetes controller**: [Kubernetes Overview](/kubernetes/)
+- **Kubernetes controller**: [Kubernetes Overview](/architecture/control-plane/operator)

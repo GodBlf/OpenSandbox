@@ -1,4 +1,4 @@
-// Copyright 2026 Alibaba Group Holding Ltd.
+// Copyright 2026 The OpenSandbox Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -154,10 +154,14 @@ func (e *ExecdClient) GetCommandStatus(ctx context.Context, commandID string) (*
 	return &result, nil
 }
 
-// GetCommandLogs returns stdout/stderr for a background command. Pass cursor=-1
-// or cursor=0 for the full log. The returned CommandLogsResponse includes the
-// tail cursor for incremental polling.
+// GetCommandLogs returns stdout/stderr for a background command. Pass a nil
+// cursor or cursor=0 for the full log. The returned CommandLogsResponse includes
+// the tail cursor for incremental polling.
 func (e *ExecdClient) GetCommandLogs(ctx context.Context, commandID string, cursor *int64) (*CommandLogsResponse, error) {
+	if cursor != nil && *cursor < 0 {
+		return nil, &InvalidArgumentError{Field: "cursor", Message: "must not be negative"}
+	}
+
 	path := "/command/" + url.PathEscape(commandID) + "/logs"
 	if cursor != nil {
 		path += "?cursor=" + strconv.FormatInt(*cursor, 10)

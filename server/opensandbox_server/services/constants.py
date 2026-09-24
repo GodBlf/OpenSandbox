@@ -1,4 +1,4 @@
-# Copyright 2025 Alibaba Group Holding Ltd.
+# Copyright 2025 The OpenSandbox Authors
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@ from opensandbox_server.constants import OPENSANDBOX_LIFECYCLE
 RESERVED_LABEL_PREFIX = "opensandbox.io/"
 
 SANDBOX_ID_LABEL = "opensandbox.io/id"
+SANDBOX_TENANT_LABEL = "opensandbox.io/tenant"
 SANDBOX_EXPIRES_AT_LABEL = "opensandbox.io/expires-at"
 SANDBOX_MANUAL_CLEANUP_LABEL = "opensandbox.io/manual-cleanup"
 SANDBOX_PLATFORM_OS_LABEL = "opensandbox.io/platform-os"
@@ -33,6 +34,11 @@ SANDBOX_OSSFS_MOUNTS_LABEL = "opensandbox.io/ossfs-mounts"
 SANDBOX_MANAGED_VOLUMES_LABEL = "opensandbox.io/volume-managed-by"
 OPEN_SANDBOX_INGRESS_HEADER = "OpenSandbox-Ingress-To"
 OPEN_SANDBOX_EGRESS_AUTH_HEADER = "OPENSANDBOX-EGRESS-AUTH"
+# Response header published by the lifecycle server on endpoint lookups:
+# tells clients the origin of a sandbox (e.g. "template" for fsb
+# golden-image sandboxes, which have no sandbox-side egress sidecar).
+OPEN_SANDBOX_ORIGIN_HEADER = "OPEN-SANDBOX-ORIGIN"
+SANDBOX_ORIGIN_TEMPLATE = "template"
 SANDBOX_EGRESS_AUTH_TOKEN_METADATA_KEY = "opensandbox.io/egress-auth-token"
 OPEN_SANDBOX_SECURE_ACCESS_HEADER = "OpenSandbox-Secure-Access"
 SANDBOX_SECURE_ACCESS_TOKEN_METADATA_KEY = "opensandbox.io/secure-access-token"
@@ -61,6 +67,11 @@ OPENSANDBOX_EGRESS_CREDENTIAL_VAULT_TRUSTED_PROXY_CIDRS = (
 OPENSANDBOX_EGRESS_CREDENTIAL_VAULT_REQUIRE_SCOPED_MATCH = (
     "OPENSANDBOX_EGRESS_CREDENTIAL_VAULT_REQUIRE_SCOPED_MATCH"
 )
+# Server-injected from [egress.upstream_proxy]; admin-only, deliberately not in
+# ALLOWED_EGRESS_ENV_VARS so request env cannot set them.
+# Must match components/egress/pkg/constants/configuration.go EnvUpstreamProxy{,Auth}.
+OPENSANDBOX_EGRESS_UPSTREAM_PROXY = "OPENSANDBOX_EGRESS_UPSTREAM_PROXY"
+OPENSANDBOX_EGRESS_UPSTREAM_PROXY_AUTH = "OPENSANDBOX_EGRESS_UPSTREAM_PROXY_AUTH"
 ALLOWED_EGRESS_ENV_VARS = frozenset({
     "OPENSANDBOX_EGRESS_LOG_LEVEL",
     "OPENSANDBOX_EGRESS_DNS_UPSTREAM_TIMEOUT",
@@ -173,6 +184,7 @@ class SnapshotErrorCodes:
 __all__ = [
     "RESERVED_LABEL_PREFIX",
     "SANDBOX_ID_LABEL",
+    "SANDBOX_TENANT_LABEL",
     "SANDBOX_EXPIRES_AT_LABEL",
     "SANDBOX_MANUAL_CLEANUP_LABEL",
     "SANDBOX_PLATFORM_OS_LABEL",
@@ -195,6 +207,8 @@ __all__ = [
     "OTEL_EXPORTER_OTLP_ENDPOINT",
     "EGRESS_ENV_PREFIX",
     "OPENSANDBOX_EGRESS_MITMPROXY_SSL_INSECURE",
+    "OPENSANDBOX_EGRESS_UPSTREAM_PROXY",
+    "OPENSANDBOX_EGRESS_UPSTREAM_PROXY_AUTH",
     "ALLOWED_EGRESS_ENV_VARS",
     "OPENSANDBOX_RUNTIME_VOLUME_NAME",
     "OPENSANDBOX_RUNTIME_MOUNT_PATH",

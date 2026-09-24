@@ -1,4 +1,4 @@
-// Copyright 2026 Alibaba Group Holding Ltd.
+// Copyright 2026 The OpenSandbox Authors
 // 
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -261,6 +261,10 @@ export class CommandsAdapter implements ExecdCommands {
   }
 
   async getBackgroundCommandLogs(commandId: string, cursor?: number): Promise<CommandLogs> {
+    if (cursor != null && cursor < 0) {
+      throw new Error("cursor cannot be negative");
+    }
+
     const { data, error, response } = await this.client.GET("/command/{id}/logs", {
       params: { path: { id: commandId }, query: cursor == null ? {} : { cursor } },
       parseAs: "text",

@@ -1,4 +1,4 @@
-# Copyright 2025 Alibaba Group Holding Ltd.
+# Copyright 2025 The OpenSandbox Authors
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -22,6 +22,7 @@ from datetime import datetime
 from typing import Dict, List, Any, Optional
 
 from opensandbox_server.api.schema import Endpoint, ImageSpec, NetworkPolicy, PlatformSpec, Volume
+from opensandbox_server.config import EgressUpstreamProxyConfig
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,7 @@ class EgressWorkloadSettings:
     resource_requests: Optional[Dict[str, str]]
     resource_limits: Optional[Dict[str, str]]
     otlp_endpoint: Optional[str] = None
+    upstream_proxy: Optional[EgressUpstreamProxyConfig] = None
 
 
 class WorkloadProvider(ABC):
@@ -135,6 +137,22 @@ class WorkloadProvider(ABC):
             List of workload objects
         """
         pass
+    
+    def list_workloads_all_namespaces(self, label_selector: str) -> List[Any]:
+        """
+        List workloads matching label selector across all namespaces.
+
+        Used by the cross-namespace sandbox lookup fallback. Providers
+        without cluster-wide read access may keep this default; the
+        fallback then simply finds nothing.
+
+        Args:
+            label_selector: Label selector query
+
+        Returns:
+            List of workload objects
+        """
+        return []
     
     @abstractmethod
     def update_expiration(self, sandbox_id: str, namespace: str, expires_at: datetime) -> None:

@@ -1,4 +1,4 @@
-// Copyright 2026 Alibaba Group Holding Ltd.
+// Copyright 2026 The OpenSandbox Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -2204,6 +2204,23 @@ func TestGetCommandLogs_WithCursor(t *testing.T) {
 	}
 	if got.Cursor != 99 {
 		assert.Fail(t, fmt.Sprintf("Cursor = %d, want 99", got.Cursor))
+	}
+}
+
+func TestGetCommandLogs_RejectsNegativeCursorWithoutRequest(t *testing.T) {
+	client := NewExecdClient("http://unused.invalid", "token")
+	cursor := int64(-1)
+
+	got, err := client.GetCommandLogs(context.Background(), "cmd-logs", &cursor)
+
+	if got != nil {
+		assert.Fail(t, "GetCommandLogs returned a result for a negative cursor")
+	}
+	require.Error(t, err)
+	var invalid *InvalidArgumentError
+	require.ErrorAs(t, err, &invalid)
+	if invalid.Field != "cursor" {
+		assert.Fail(t, fmt.Sprintf("Field = %q, want cursor", invalid.Field))
 	}
 }
 

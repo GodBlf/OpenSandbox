@@ -1,4 +1,4 @@
-// Copyright 2025 Alibaba Group Holding Ltd.
+// Copyright 2025 The OpenSandbox Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -30,6 +30,13 @@ import (
 	"github.com/alibaba/OpenSandbox/sandbox-k8s/internal/task-executor/types"
 	api "github.com/alibaba/OpenSandbox/sandbox-k8s/pkg/task-executor"
 )
+
+func postStopFinished(task *types.Task) bool {
+	if task == nil {
+		return false
+	}
+	return statusHasPostStopFinished(task.Status)
+}
 
 type fakeExecutor struct {
 	mu      sync.Mutex
