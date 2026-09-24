@@ -15,10 +15,12 @@
 package main
 
 import (
+	"net/netip"
 	"strings"
 	"testing"
 
 	"github.com/alibaba/opensandbox/egress/pkg/constants"
+	"github.com/alibaba/opensandbox/egress/pkg/mitmproxy"
 )
 
 func TestUpstreamProxySpecForProfile(t *testing.T) {
@@ -86,14 +88,27 @@ func TestUpstreamProxySpecForProfile(t *testing.T) {
 			wantSpec:    true,
 		},
 		{
-			name:        "proxy is rejected under fast-sandbox profile",
+			name:        "proxy with transparent on succeeds for fast-sandbox profile without mode env",
 			proxy:       "http://proxy.local:3128",
 			transparent: "true",
 			profile:     constants.ProfileFastSandbox,
+			wantSpec:    true,
+		},
+		{
+			name:        "proxy with transparent on succeeds for fast-sandbox profile with sidecar mode env",
+			proxy:       "http://proxy.local:3128",
+			transparent: "true",
+			profile:     constants.ProfileFastSandbox,
+			mode:        constants.PolicyDnsNft,
+			wantSpec:    true,
+		},
+		{
+			name:        "proxy without transparent fails under fast-sandbox profile",
+			proxy:       "http://proxy.local:3128",
+			profile:     constants.ProfileFastSandbox,
 			wantErrSubs: []string{
 				constants.EnvUpstreamProxy,
-				constants.EnvEgressProfile,
-				constants.ProfileFastSandbox,
+				constants.EnvMitmproxyTransparent,
 			},
 		},
 	}
@@ -133,5 +148,25 @@ func TestUpstreamProxySpecForProfile(t *testing.T) {
 				t.Fatalf("expected nil spec, got %+v", spec)
 			}
 		})
+	}
+}
+
+func TestFastSandboxUpstreamEndpoint(t *testing.T) {
+	if got := fastSandboxUpstreamEndpoint(nil); got != nil {
+		t.Fatalf("nil spec must yield nil endpoint, got %+v", got)
+	}
+
+	literal := fastSandboxUpstreamEndpoint(&mitmproxy.UpstreamProxySpec{Scheme: "http", Host: "10.1.2.3", Port: 3128})
+	if literal == nil || literal.Port != 3128 {
+		t.Fatalf("unexpected literal endpoint %+v", literal)
+	}
+	want := []netip.Addr{netip.MustParseAddr("10.1.2.3")}
+	if len(literal.LiteralIPs) != 1 || literal.LiteralIPs[0] != want[0] {
+		t.Fatalf("literal endpoint must seed the drop set, got %+v", literal.LiteralIPs)
+	}
+
+	hostname := fastSandboxUpstreamEndpoint(&mitmproxy.UpstreamProxySpec{Scheme: "https", Host: "proxy.example.com", Port: 8443})
+	if hostname == nil || hostname.Port != 8443 || len(hostname.LiteralIPs) != 0 {
+		t.Fatalf("hostname endpoint must start empty for DNS learning, got %+v", hostname)
 	}
 }
