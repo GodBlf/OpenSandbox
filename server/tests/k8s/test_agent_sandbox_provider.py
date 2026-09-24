@@ -1037,7 +1037,7 @@ spec:
 
     def _running_sandbox(self) -> dict:
         return {
-            "metadata": {"name": "test-id", "namespace": "test-ns", "resourceVersion": "100"},
+            "metadata": {"name": "test-id", "namespace": "test-ns"},
             "spec": {"operatingMode": "Running"},
             "status": {
                 "conditions": [
@@ -1054,7 +1054,7 @@ spec:
 
     def _paused_sandbox(self) -> dict:
         return {
-            "metadata": {"name": "test-id", "namespace": "test-ns", "resourceVersion": "100"},
+            "metadata": {"name": "test-id", "namespace": "test-ns"},
             "spec": {"operatingMode": "Suspended"},
             "status": {
                 "conditions": [
@@ -1107,10 +1107,7 @@ spec:
         assert call_kwargs["version"] == "v1beta1"
         assert call_kwargs["plural"] == "sandboxes"
         assert call_kwargs["name"] == "test-id"
-        assert call_kwargs["body"] == {
-            "metadata": {"resourceVersion": "100"},
-            "spec": {"operatingMode": "Suspended"},
-        }
+        assert call_kwargs["body"] == {"spec": {"operatingMode": "Suspended"}}
 
     def test_pause_sandbox_already_paused_rejects(self, mock_k8s_client):
         """Pause rejected when the sandbox is already paused."""
@@ -1182,15 +1179,6 @@ spec:
         with pytest.raises(ValueError, match="not found"):
             provider.pause_sandbox("test-id", "test-ns")
 
-    def test_pause_patch_conflict_maps_to_retry(self, mock_k8s_client):
-        """Patch 409 (concurrent modification) maps to a public retry error."""
-        provider = AgentSandboxProvider(mock_k8s_client)
-        mock_k8s_client.get_custom_object.return_value = self._running_sandbox()
-        mock_k8s_client.patch_custom_object.side_effect = ApiException(status=409)
-
-        with pytest.raises(ValueError, match="changed concurrently"):
-            provider.pause_sandbox("test-id", "test-ns")
-
     def test_resume_sandbox_paused_allows(self, mock_k8s_client):
         """Resume allowed when the sandbox is paused; patches spec.operatingMode=Running."""
         provider = AgentSandboxProvider(mock_k8s_client)
@@ -1205,10 +1193,7 @@ spec:
         assert call_kwargs["version"] == "v1beta1"
         assert call_kwargs["plural"] == "sandboxes"
         assert call_kwargs["name"] == "test-id"
-        assert call_kwargs["body"] == {
-            "metadata": {"resourceVersion": "100"},
-            "spec": {"operatingMode": "Running"},
-        }
+        assert call_kwargs["body"] == {"spec": {"operatingMode": "Running"}}
 
     def test_resume_sandbox_running_rejects(self, mock_k8s_client):
         """Resume rejected when the sandbox is running."""

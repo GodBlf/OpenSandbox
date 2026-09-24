@@ -500,11 +500,10 @@ class AgentSandboxProvider(WorkloadProvider):
         sandbox_id: str,
         operating_mode: str,
     ) -> None:
-        """Patch spec.operatingMode guarded by the read resourceVersion.
+        """Patch spec.operatingMode.
 
-        The precondition turns check-then-act races into explicit errors:
-        404 means the CR was deleted since the read, 409 means another
-        writer changed it first.
+        A patch-time 404 (CR deleted between the read and the patch) maps
+        to the public not-found error.
         """
         try:
             self.k8s_client.patch_custom_object(
@@ -513,16 +512,11 @@ class AgentSandboxProvider(WorkloadProvider):
                 namespace=namespace,
                 plural=self.plural,
                 name=sandbox["metadata"]["name"],
-                body={
-                    "metadata": {"resourceVersion": sandbox["metadata"]["resourceVersion"]},
-                    "spec": {"operatingMode": operating_mode},
-                },
+                body={"spec": {"operatingMode": operating_mode}},
             )
         except ApiException as e:
             if e.status == 404:
                 raise ValueError(f"Sandbox '{sandbox_id}' not found") from e
-            if e.status == 409:
-                raise ValueError(f"Sandbox '{sandbox_id}' changed concurrently, retry") from e
             raise
 
     def get_status(self, workload: Dict[str, Any]) -> Dict[str, Any]:
