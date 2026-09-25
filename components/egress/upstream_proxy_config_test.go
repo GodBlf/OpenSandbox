@@ -15,12 +15,15 @@
 package main
 
 import (
+	"context"
 	"net/netip"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/alibaba/opensandbox/egress/pkg/constants"
 	"github.com/alibaba/opensandbox/egress/pkg/mitmproxy"
+	"github.com/alibaba/opensandbox/egress/pkg/nftables"
 )
 
 func TestUpstreamProxySpecForProfile(t *testing.T) {
@@ -168,5 +171,91 @@ func TestFastSandboxUpstreamEndpoint(t *testing.T) {
 	hostname := fastSandboxUpstreamEndpoint(&mitmproxy.UpstreamProxySpec{Scheme: "https", Host: "proxy.example.com", Port: 8443})
 	if hostname == nil || hostname.Port != 8443 || len(hostname.LiteralIPs) != 0 {
 		t.Fatalf("hostname endpoint must start empty for DNS learning, got %+v", hostname)
+	}
+}
+
+func TestUnionResolvedIPs(t *testing.T) {
+	a := netip.MustParseAddr("10.0.0.1")
+	b := netip.MustParseAddr("10.0.0.2")
+	ips := unionResolvedIPs([]nftables.ResolvedIP{
+		{Addr: a, TTL: 5 * time.Minute},
+		{Addr: b}, // pod-resolver form: no TTL
+		{Addr: a}, // duplicate, must not shorten the dnsproxy TTL
+	})
+	if len(ips) != 2 {
+		t.Fatalf("expected dedupe to 2 entries, got %+v", ips)
+	}
+	if ips[0].Addr != a || ips[0].TTL != 5*time.Minute {
+		t.Fatalf("TTL-bearing entry must win for %s, got %+v", a, ips[0])
+	}
+	if ips[1].Addr != b {
+		t.Fatalf("unexpected second entry %+v", ips[1])
+	}
+}
+
+func TestUnionResolver(t *testing.T) {
+	ctx := context.Background()
+	a := netip.MustParseAddr("10.0.0.1")
+	b := netip.MustParseAddr("10.0.0.2")
+	returning := func(ips ...nftables.ResolvedIP) func(context.Context, string) ([]nftables.ResolvedIP, error) {
+		return func(context.Context, string) ([]nftables.ResolvedIP, error) { return ips, nil }
+	}
+	failing := func(err error) func(context.Context, string) ([]nftables.ResolvedIP, error) {
+		return func(context.Context, string) ([]nftables.ResolvedIP, error) { return nil, err }
+	}
+
+	t.Run("unions both authorities", func(t *testing.T) {
+		ips, err := unionResolver(ctx, "proxy.test",
+			returning(nftables.ResolvedIP{Addr: a, TTL: time.Minute}),
+			returning(nftables.ResolvedIP{Addr: b}))
+		if err != nil || len(ips) != 2 {
+			t.Fatalf("expected union of both authorities, got %+v err %v", ips, err)
+		}
+	})
+
+	t.Run("tolerates one failing authority", func(t *testing.T) {
+		ips, err := unionResolver(ctx, "proxy.test",
+			failing(context.DeadlineExceeded),
+			returning(nftables.ResolvedIP{Addr: b}))
+		if err != nil || len(ips) != 1 || ips[0].Addr != b {
+			t.Fatalf("expected surviving authority's answers, got %+v err %v", ips, err)
+		}
+	})
+
+	t.Run("all authorities failing is an error naming each", func(t *testing.T) {
+		_, err := unionResolver(ctx, "proxy.test",
+			failing(context.DeadlineExceeded),
+			failing(context.Canceled))
+		if err == nil {
+			t.Fatal("every authority failing must be an error")
+		}
+		if !strings.Contains(err.Error(), "deadline") || !strings.Contains(err.Error(), "canceled") {
+			t.Fatalf("error must carry each authority's failure, got %q", err.Error())
+		}
+	})
+
+	t.Run("NXDOMAIN everywhere is empty, not an error", func(t *testing.T) {
+		ips, err := unionResolver(ctx, "gone.test", returning(), returning())
+		if err != nil || len(ips) != 0 {
+			t.Fatalf("expected empty union without error, got %+v err %v", ips, err)
+		}
+	})
+}
+
+func TestResolveUpstreamProxyHost(t *testing.T) {
+	// The split-authority case from the review: the dnsproxy's forward
+	// upstream errors (e.g. OPENSANDBOX_EGRESS_DNS_UPSTREAM pointing at a
+	// resolver with a different view) while the Pod resolver — mitmdump's
+	// dial authority — still resolves the name. "localhost" resolves locally
+	// on every platform, so no external network is touched.
+	ips, err := resolveUpstreamProxyHost(context.Background(), "localhost",
+		func(context.Context, string) ([]nftables.ResolvedIP, error) {
+			return nil, context.DeadlineExceeded
+		})
+	if err != nil {
+		t.Fatalf("a failing dns authority must not fail the union: %v", err)
+	}
+	if len(ips) == 0 {
+		t.Fatal("the pod resolver must cover the failing dns authority")
 	}
 }

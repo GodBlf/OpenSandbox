@@ -50,7 +50,7 @@ To bypass decryption for selected domains, edit the baked-in
 | `OPENSANDBOX_EGRESS_MITMPROXY_UPSTREAM_TRUST_DIR` | No | Trust directory for upstream TLS verification (OpenSSL style); overrides the config.yaml default | `/etc/ssl/certs` |
 | `OPENSANDBOX_EGRESS_MITMPROXY_SSL_INSECURE` | No | Skip upstream TLS verification (`1/true/on`); use when clients connect by IP and SNI is unavailable | Disabled |
 | `OPENSANDBOX_EGRESS_MITMPROXY_EXTRA_PORTS` | No | **Experimental.** Extra destination TCP ports to intercept, appended to the always-on `80,443` (comma-separated, e.g. `8080,8443`). Fails closed at startup on invalid input; total ports (including 80/443) must be ≤ 15. Note: the system addon's credential-binding matcher currently only fires on canonical 80/443 — extras are decrypted and logged but not matched against bindings. | Empty |
-| `OPENSANDBOX_EGRESS_UPSTREAM_PROXY` | No | Chained upstream proxy endpoint (`http://host[:port]` or `https://host[:port]`), with no credentials, query, fragment, or non-root path. Requires `OPENSANDBOX_EGRESS_MITMPROXY_TRANSPARENT=true` and — outside the fast-sandbox profile — `OPENSANDBOX_EGRESS_MODE=dns+nft`; egress startup fails otherwise. Under the fast-sandbox profile the endpoint is contained profile-wide (see the fast-sandbox bullet under "Chain Through an Upstream Proxy"). When set, the bundled `upstream_proxy.py` addon is loaded after the system addon and every mitmproxy-handled connection is forwarded through the proxy via `CONNECT`. Fail closed: pass-through flows that cannot be chained are refused and logged with the `credential proxy:` prefix. | Empty (disabled) |
+| `OPENSANDBOX_EGRESS_UPSTREAM_PROXY` | No | Chained upstream proxy endpoint (`http://host[:port]` or `https://host[:port]`), with no credentials, query, fragment, or non-root path. The host must be a literal IP or a dotted domain name: a dotless name expands differently through the Pod resolver's DNS search list than through the egress's direct query, so the containment sets could miss the address actually dialed (startup fails otherwise). Requires `OPENSANDBOX_EGRESS_MITMPROXY_TRANSPARENT=true` and — outside the fast-sandbox profile — `OPENSANDBOX_EGRESS_MODE=dns+nft`; egress startup fails otherwise. Under the fast-sandbox profile the endpoint is contained profile-wide (see the fast-sandbox bullet under "Chain Through an Upstream Proxy"). When set, the bundled `upstream_proxy.py` addon is loaded after the system addon and every mitmproxy-handled connection is forwarded through the proxy via `CONNECT`. Fail closed: pass-through flows that cannot be chained are refused and logged with the `credential proxy:` prefix. | Empty (disabled) |
 | `OPENSANDBOX_EGRESS_UPSTREAM_PROXY_AUTH` | No | Complete `Proxy-Authorization` header value sent on the upstream `CONNECT` (e.g. `Basic base64(user:pass)`). Requires `OPENSANDBOX_EGRESS_UPSTREAM_PROXY`; startup fails if set alone. Never logged. | Empty |
 
 Notes:
@@ -217,8 +217,15 @@ Semantics and limits:
   bounded TTLs, kept fresh by the egress self-resolution loop. The shared
   mitmdump resolves the hostname through the fastlet Pod's own resolver
   (cluster DNS), so the name must be resolvable there — the egress component
-  does not redirect the Pod's own DNS. Literal proxy IPs are seeded
-  permanently.
+  does not redirect the Pod's own DNS. Because the dnsproxy's forward
+  upstreams (`OPENSANDBOX_EGRESS_DNS_UPSTREAM` or `/etc/resolv.conf`) and the
+  Pod resolver can return different address sets (split-horizon DNS, an
+  operator-configured DNS upstream, or plain rotation), the self-resolution
+  loop queries **both** authorities and seeds the drop sets with the union:
+  an address only the Pod resolver returns is exactly one a sandbox could
+  CONNECT directly, so containment must cover it. The first resolve runs
+  synchronously at startup, before the egress serves any sandbox action.
+  Literal proxy IPs are seeded permanently.
 - **Requires `connection_strategy: lazy`** (the shipped default): eager
   connects upstream before any request exists, so no `via` can be applied.
 - **Config validation**: a malformed proxy URL, credentials in the URL, or

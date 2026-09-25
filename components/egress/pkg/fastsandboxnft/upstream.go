@@ -158,32 +158,35 @@ const upstreamProxyRefreshInterval = 30 * time.Second
 // lookup and feeds the answers to AddUpstreamProxyIPs, so the drop sets stay
 // seeded even when no sandbox ever queries the name: sandbox lookups keep
 // them fresh through the dnsproxy infra-domain callback, but nothing
-// guarantees such queries. Failures are logged and retried next tick; an
-// element whose renewal keeps failing eventually expires (fail-open for
-// that address), which is acceptable only because the shared mitmproxy's
-// own chained dials are then failing equally. Literal endpoints need no
-// loop (their elements are permanent).
+// guarantees such queries. The first resolve runs synchronously so hostname
+// containment is active before the caller starts serving sandbox traffic;
+// subsequent refreshes tick every upstreamProxyRefreshInterval. Failures are
+// logged and retried next tick; an element whose renewal keeps failing
+// eventually expires (fail-open for that address), which is acceptable only
+// because the shared mitmproxy's own chained dials are then failing equally.
+// Literal endpoints need no loop (their elements are permanent).
 func (a *Applier) StartUpstreamProxyRefresh(ctx context.Context, domain string, lookup func(context.Context, string) ([]nftables.ResolvedIP, error)) {
-	safego.Go(func() {
-		resolve := func() {
-			resolveCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			defer cancel()
-			ips, err := lookup(resolveCtx, domain)
-			if err != nil {
-				log.Warnf("fastsandboxnft: upstream proxy resolve %q failed: %v", domain, err)
-				return
-			}
-			if len(ips) == 0 {
-				log.Warnf("fastsandboxnft: upstream proxy %q resolved to no addresses", domain)
-				return
-			}
-			if err := a.AddUpstreamProxyIPs(resolveCtx, ips); err != nil {
-				log.Warnf("fastsandboxnft: upstream proxy nft update for %q failed: %v", domain, err)
-			}
+	resolve := func() {
+		resolveCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		ips, err := lookup(resolveCtx, domain)
+		if err != nil {
+			log.Warnf("fastsandboxnft: upstream proxy resolve %q failed: %v", domain, err)
+			return
 		}
-		// Seed the drop sets immediately so containment is active before the
-		// first sandbox registers.
-		resolve()
+		if len(ips) == 0 {
+			log.Warnf("fastsandboxnft: upstream proxy %q resolved to no addresses", domain)
+			return
+		}
+		if err := a.AddUpstreamProxyIPs(resolveCtx, ips); err != nil {
+			log.Warnf("fastsandboxnft: upstream proxy nft update for %q failed: %v", domain, err)
+		}
+	}
+	// Seed the drop sets before the goroutine (and before the caller starts
+	// serving action requests): no window where a registered subject could
+	// CONNECT a hostname endpoint that has not been dropped yet.
+	resolve()
+	safego.Go(func() {
 		ticker := time.NewTicker(upstreamProxyRefreshInterval)
 		defer ticker.Stop()
 		for {
