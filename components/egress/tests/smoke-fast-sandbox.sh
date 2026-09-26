@@ -731,11 +731,14 @@ else
   pass "profile-wide containment (default-allow subject still blocked)"
 
   # Containment survives an egress restart: the drop rule sits ahead of the
-  # established accept, the drop set is re-seeded, and the chained path works
-  # after the action replay.
+  # established accept, the drop elements are PERMANENT (no kernel timeout —
+  # they persist in the kernel for the whole daemon downtime, like every
+  # other rule in this table), and the chained path works after the replay.
   kill "${EGRESS_PID}" 2>/dev/null
   wait "${EGRESS_PID}" 2>/dev/null || true
   EGRESS_PID=""
+  nft list set inet opensandbox-fast-sandbox upstream_proxy_v4 2>/dev/null | grep -q '10.99.0.2' \
+    || fail "drop element must persist in the kernel while the egress daemon is down"
   EGRESS_MITM=1 EGRESS_UPSTREAM_PROXY="http://proxy.test:3128" start_egress
   wait_for 15 "drop set re-seeded after restart" bash -c \
     "nft list set inet opensandbox-fast-sandbox upstream_proxy_v4 2>/dev/null | grep -q '10.99.0.2'"

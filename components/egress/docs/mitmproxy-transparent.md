@@ -213,19 +213,25 @@ Semantics and limits:
   OUTPUT enforcement), so no accept-side exception is needed. For a hostname
   endpoint the name is registered as an infrastructure domain on the shared
   dnsproxy: sandbox lookups resolve without per-subject policy and never feed
-  the dynamic allow sets; DNS-learned addresses seed the drop sets with
-  bounded TTLs, kept fresh by the egress self-resolution loop. The shared
-  mitmdump resolves the hostname through the fastlet Pod's own resolver
-  (cluster DNS), so the name must be resolvable there — the egress component
-  does not redirect the Pod's own DNS. Because the dnsproxy's forward
-  upstreams (`OPENSANDBOX_EGRESS_DNS_UPSTREAM` or `/etc/resolv.conf`) and the
-  Pod resolver can return different address sets (split-horizon DNS, an
-  operator-configured DNS upstream, or plain rotation), the self-resolution
-  loop queries **both** authorities and seeds the drop sets with the union:
-  an address only the Pod resolver returns is exactly one a sandbox could
-  CONNECT directly, so containment must cover it. The first resolve runs
-  synchronously at startup, before the egress serves any sandbox action.
-  Literal proxy IPs are seeded permanently.
+  the dynamic allow sets; DNS-learned addresses seed the drop sets as
+  PERMANENT elements (no kernel timeout): every other rule in the table
+  persists while the egress daemon is down (fail closed), and a kernel
+  timeout would silently lapse the containment during a restart — expiry is
+  owned by the egress instead (the self-resolution loop prunes addresses the
+  resolvers stop returning, and table rebuilds re-seed from the in-memory
+  mirror). The shared mitmdump resolves the hostname through the fastlet
+  Pod's own resolver (cluster DNS), so the name must be resolvable there —
+  the egress component does not redirect the Pod's own DNS. Because the
+  dnsproxy's forward upstreams (`OPENSANDBOX_EGRESS_DNS_UPSTREAM` or
+  `/etc/resolv.conf`) and the Pod resolver can return different address sets
+  (split-horizon DNS, an operator-configured DNS upstream, or plain
+  rotation), the self-resolution loop queries **both** authorities and seeds
+  the drop sets with the union: an address only the Pod resolver returns is
+  exactly one a sandbox could CONNECT directly, so containment must cover
+  it. The first seed retries with bounded backoff at startup and **fails
+  egress startup** if the hostname cannot be resolved (fail closed, like
+  every other initialization step — never serving sandboxes with an empty
+  drop set). Literal proxy IPs are seeded permanently.
 - **Requires `connection_strategy: lazy`** (the shipped default): eager
   connects upstream before any request exists, so no `via` can be applied.
 - **Config validation**: a malformed proxy URL, credentials in the URL, or

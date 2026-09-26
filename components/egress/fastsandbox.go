@@ -162,9 +162,14 @@ func runFastSandboxProfile(ctx context.Context, upstreamSpec *mitmproxy.Upstream
 					log.Warnf("upstream proxy: nft update for %q failed: %v", domain, err)
 				}
 			})
-			podNft.StartUpstreamProxyRefresh(ctx, host, func(ctx context.Context, domain string) ([]nftables.ResolvedIP, error) {
+			if err := podNft.StartUpstreamProxyRefresh(ctx, host, func(ctx context.Context, domain string) ([]nftables.ResolvedIP, error) {
 				return resolveUpstreamProxyHost(ctx, domain, proxy.ResolveDomain)
-			})
+			}); err != nil {
+				// Fail closed like every other startup step: serving sandbox
+				// actions with an unseeded drop set would let any subject
+				// that learns the proxy IP CONNECT it directly.
+				log.Fatalf("fast-sandbox upstream proxy %q: %v", host, err)
+			}
 			log.Infof("upstream proxy: registered infra DNS domain %q (profile-wide sandbox drop, no allow-set feed, dual-resolver refresh)", host)
 		} else {
 			log.Infof("upstream proxy: literal endpoint %s:%d (profile-wide sandbox drop)", upstreamSpec.Host, upstreamSpec.Port)
