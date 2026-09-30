@@ -53,7 +53,7 @@ GH_TOKEN=github_pat_replace_me
 Run the example from the repository root:
 
 ```shell
-uv run python examples/github-copilot/main.py
+uv run python examples/github-copilot-cli-sandbox/main.py
 ```
 
 The script creates a Docker-backed sandbox, installs GitHub Copilot CLI with
