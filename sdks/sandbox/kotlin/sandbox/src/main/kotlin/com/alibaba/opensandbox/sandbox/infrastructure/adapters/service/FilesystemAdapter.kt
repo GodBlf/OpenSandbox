@@ -83,6 +83,22 @@ internal class FilesystemAdapter(
                 .build(),
         )
 
+    fun withIdentity(
+        uid: Long,
+        gid: Long,
+    ): Filesystem {
+        require(uid in 0..4294967294L) { "uid must be between 0 and 4294967294" }
+        require(gid in 0..4294967294L) { "gid must be between 0 and 4294967294" }
+        return FilesystemAdapter(
+            httpClientProvider,
+            SandboxEndpoint(
+                endpoint = execdEndpoint.endpoint.trimEnd('/') + "/v1/filesystem/$uid/$gid",
+                headers = execdEndpoint.headers,
+                origin = execdEndpoint.origin,
+            ),
+        )
+    }
+
     override fun readFile(
         path: String,
         encoding: String,
