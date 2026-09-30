@@ -14,33 +14,42 @@ the sandbox.
 The Python client uses the OpenSandbox SDK. The local OpenSandbox Server
 creates and manages the container through its Docker runtime.
 
-The example pins these Microsoft Agent Framework packages:
-
-```text
-agent-framework-core==1.19.0
-agent-framework-openai==1.14.4
-```
-
-The selective installation provides the workflow, agent, and OpenAI/Azure
-OpenAI client APIs used by the example without installing unrelated Agent
-Framework integrations.
-
 The sandbox uses the Docker Hub image
 `opensandbox/code-interpreter:v1.1.0`; no Alibaba Cloud container registry is
 required.
 
 ## Start OpenSandbox server [local]
 
-Pre-pull the code-interpreter image:
+Pre-pull the code-interpreter image (includes Python 3.12+):
 
 ```shell
 docker pull opensandbox/code-interpreter:v1.1.0
 ```
 
-Install dependencies and initialize the local Docker runtime:
+Create a Python 3.10+ environment and install the packages declared by the
+example project:
 
 ```shell
-uv sync
+uv venv
+source .venv/bin/activate
+
+uv pip install \
+  --default-index https://packagefeedproxy.microsoft.io/pypi/simple \
+  "agent-framework-core==1.19.0" \
+  "agent-framework-openai==1.14.4" \
+  "opensandbox==1.1.0" \
+  "opensandbox-server==0.2.3" \
+  "python-dotenv>=1.0,<2"
+```
+
+The selective Agent Framework packages provide the workflow, agent, and
+OpenAI/Azure OpenAI client APIs used by this example without installing
+unrelated integrations. The Microsoft package proxy matches the package
+source configured by the example project's `pyproject.toml`.
+
+Initialize and start the local Docker runtime:
+
+```shell
 uv run opensandbox-server init-config ~/.sandbox.toml --example docker
 OPENSANDBOX_INSECURE_SERVER=YES uv run opensandbox-server
 ```
@@ -57,7 +66,7 @@ wheel is missing its generated FastPath gRPC modules and fails during startup.
 Copy the environment template:
 
 ```shell
-cp .env.example .env
+cp examples/microsoft-agent-framework/.env.example .env
 ```
 
 Configure either OpenAI:
