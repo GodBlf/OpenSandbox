@@ -52,6 +52,16 @@ internal sealed class FilesystemAdapter : ISandboxFiles
         _headers = headers ?? new Dictionary<string, string>();
     }
 
+    internal ISandboxFiles WithIdentity(uint uid, uint gid)
+    {
+        if (uid == uint.MaxValue)
+            throw new ArgumentOutOfRangeException(nameof(uid), "UID must be at most 4294967294.");
+        if (gid == uint.MaxValue)
+            throw new ArgumentOutOfRangeException(nameof(gid), "GID must be at most 4294967294.");
+        var baseUrl = _baseUrl + FormattableString.Invariant($"/v1/filesystem/{uid}/{gid}");
+        return new FilesystemAdapter(_client.WithBaseUrl(baseUrl), _httpClient, baseUrl, _headers);
+    }
+
     public async Task<IReadOnlyDictionary<string, SandboxFileInfo>> GetFileInfoAsync(
         IEnumerable<string> paths,
         CancellationToken cancellationToken = default)
