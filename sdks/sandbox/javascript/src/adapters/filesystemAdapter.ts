@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import type { ExecdClient } from "../openapi/execdClient.js";
+import { createExecdClient, type ExecdClient } from "../openapi/execdClient.js";
 import { throwOnOpenApiFetchError } from "./openapiError.js";
 import type { SandboxFiles } from "../services/filesystem.js";
 import type { paths as ExecdPaths } from "../api/execd.js";
@@ -247,9 +247,24 @@ export class FilesystemAdapter implements SandboxFiles {
 
   constructor(
     private readonly client: ExecdClient,
-    private readonly opts: FilesystemAdapterOptions
+    private readonly opts: FilesystemAdapterOptions,
+    private readonly identityBaseUrl: string = opts.baseUrl
   ) {
     this.fetch = opts.fetch ?? fetch;
+  }
+
+  withIdentity(uid: number, gid: number): SandboxFiles {
+    for (const [name, value] of [["uid", uid], ["gid", gid]] as const) {
+      if (!Number.isInteger(value) || value < 0 || value > 4294967294) {
+        throw new RangeError(name + " must be an integer between 0 and 4294967294");
+      }
+    }
+    const opts = {
+      ...this.opts,
+      baseUrl: this.identityBaseUrl.replace(/\/+$/, "") +
+        "/v1/filesystem/" + uid + "/" + gid,
+    };
+    return new FilesystemAdapter(createExecdClient(opts), opts, this.identityBaseUrl);
   }
 
   private parseIsoDate(field: string, v: unknown): Date {
