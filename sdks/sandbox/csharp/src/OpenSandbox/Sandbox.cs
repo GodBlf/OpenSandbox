@@ -62,7 +62,7 @@ public sealed class Sandbox : IAsyncDisposable
     /// </summary>
     public ISandboxFiles FilesWithIdentity(uint uid, uint gid)
     {
-        if (Files is not Adapters.FilesystemAdapter adapter)
+        if (Files is not IIdentitySandboxFiles adapter)
             throw new NotSupportedException("The selected filesystem adapter does not support execution identity.");
         return adapter.WithIdentity(uid, gid);
     }
