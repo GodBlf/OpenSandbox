@@ -16,7 +16,6 @@ import { createExecdClient, type ExecdClient } from "../openapi/execdClient.js";
 import { throwOnOpenApiFetchError } from "./openapiError.js";
 import type { SandboxFiles } from "../services/filesystem.js";
 import type { paths as ExecdPaths } from "../api/execd.js";
-import type { paths as ExecdPaths } from "../api/execd.js";
 import type {
   ContentReplaceEntry,
   ContentReplaceResult,
@@ -226,8 +225,12 @@ function toPermission(e: {
 export class FilesystemAdapter implements SandboxFiles {
   private static readonly identityInfoPath: keyof ExecdPaths =
     "/v1/filesystem/{uid}/{gid}/files/info";
-  private static readonly identityBasePath =
-    FilesystemAdapter.identityInfoPath.replace("/files/info", "");
+  private static identityPath(uid: number, gid: number): string {
+    return FilesystemAdapter.identityInfoPath
+      .replace("{uid}", String(uid))
+      .replace("{gid}", String(gid))
+      .replace("/files/info", "");
+  }
   private readonly fetch: typeof fetch;
 
   private static readonly Api = {
@@ -267,7 +270,7 @@ export class FilesystemAdapter implements SandboxFiles {
     const opts = {
       ...this.opts,
       baseUrl: this.identityBaseUrl.replace(/\/+$/, "") +
-        FilesystemAdapter.identityBasePath + "/" + uid + "/" + gid,
+        FilesystemAdapter.identityPath(uid, gid),
     };
     return new FilesystemAdapter(createExecdClient(opts), opts, this.identityBaseUrl);
   }
@@ -410,6 +413,7 @@ export class FilesystemAdapter implements SandboxFiles {
       req as unknown as typeof FilesystemAdapter.Api.ReplaceContentsRequest;
     const { error, response } = await this.client.POST("/files/replace", {
       body,
+      parseAs: "text",
     });
     throwOnOpenApiFetchError({ error, response }, "Replace contents failed");
   }
@@ -424,10 +428,13 @@ export class FilesystemAdapter implements SandboxFiles {
     const { data, error, response } = await this.client.POST("/files/replace", {
       params: { query: { verbose: true } },
       body,
+      parseAs: "text",
     });
     throwOnOpenApiFetchError({ error, response }, "Replace contents failed");
 
-    const ok = data as typeof FilesystemAdapter.Api.ReplaceContentsOk | undefined;
+    const ok = data?.trim()
+      ? JSON.parse(data) as typeof FilesystemAdapter.Api.ReplaceContentsOk
+      : undefined;
     if (!ok) return [];
     return Object.entries(ok).map(([path, result]) => ({
       path,
