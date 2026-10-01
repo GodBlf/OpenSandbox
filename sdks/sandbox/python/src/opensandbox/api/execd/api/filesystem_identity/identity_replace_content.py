@@ -64,6 +64,8 @@ def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
 ) -> Any | ErrorResponse | IdentityReplaceContentResponse200 | None:
     if response.status_code == 200:
+        if not response.content:
+            return cast(Any, None)
         response_200 = IdentityReplaceContentResponse200.from_dict(response.json())
 
         return response_200
