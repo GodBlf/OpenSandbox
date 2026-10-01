@@ -151,8 +151,7 @@ class FilesystemAdapter(Filesystem):
 
     def _get_execd_url(self, path: str) -> str:
         """Build URL for execd endpoint."""
-        protocol = self.connection_config.protocol
-        return f"{protocol}://{self.execd_endpoint.endpoint.rstrip('/')}{self._identity_prefix}{path}"
+        return f"{self._get_execd_base_url()}{path}"
 
     async def read_file(
         self,
