@@ -20,7 +20,7 @@ import { FilesystemAdapter, createExecdClient } from "../dist/internal.js";
 const BASE_URL = "http://localhost:44772/sandboxes/example/port/44772";
 const PREFIX = "/sandboxes/example/port/44772";
 
-function makeAdapter(requests, status = 200) {
+function makeAdapter(requests, status = 200, responseBody = "{}") {
   const opts = {
     baseUrl: BASE_URL,
     headers: { "X-EXECD-ACCESS-TOKEN": "secret", "X-Routing": "sandbox" },
@@ -31,7 +31,7 @@ function makeAdapter(requests, status = 200) {
         headers: request.headers,
         body: await request.arrayBuffer(),
       });
-      return new Response(status === 200 ? "{}" : "unsupported", {
+      return new Response(status === 200 ? responseBody : "unsupported", {
         status,
         headers: { "content-type": "application/json" },
       });
@@ -65,13 +65,26 @@ test("identity clients preserve proxy paths and headers without mutating the ori
 
 for (const status of [404, 501, 503]) {
   test("identity requests never fall back after HTTP " + status, async () => {
-    const requests = [];
-    const scoped = makeAdapter(requests, status).withIdentity(1001, 2000);
-    await assert.rejects(scoped.writeFiles([{ path: "/file", data: "content" }]));
-    assert.equal(requests.length, 1);
-    assert.equal(requests[0].path, PREFIX + "/v1/filesystem/1001/2000/files/upload");
+    for (const [operation, expectedPath] of [
+      [files => files.writeFiles([{ path: "/file", data: "content" }]), "/files/upload"],
+      [files => files.getFileInfo(["/file"]), "/files/info"],
+      [files => files.replaceContents([{ path: "/file", oldContent: "a", newContent: "b" }]), "/files/replace"],
+    ]) {
+      const requests = [];
+      const scoped = makeAdapter(requests, status).withIdentity(1001, 2000);
+      await assert.rejects(operation(scoped));
+      assert.equal(requests.length, 1);
+      assert.equal(requests[0].path, PREFIX + "/v1/filesystem/1001/2000" + expectedPath);
+    }
   });
 }
+
+test("replace contents accepts an empty successful response", async () => {
+  const requests = [];
+  const scoped = makeAdapter(requests, 200, "").withIdentity(1001, 2000);
+  await scoped.replaceContents([{ path: "/file", oldContent: "a", newContent: "b" }]);
+  assert.equal(requests[0].path, PREFIX + "/v1/filesystem/1001/2000/files/replace");
+});
 
 test("invalid identities fail before sending requests", () => {
   const requests = [];
