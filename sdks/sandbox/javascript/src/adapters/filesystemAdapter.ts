@@ -16,6 +16,7 @@ import { createExecdClient, type ExecdClient } from "../openapi/execdClient.js";
 import { throwOnOpenApiFetchError } from "./openapiError.js";
 import type { SandboxFiles } from "../services/filesystem.js";
 import type { paths as ExecdPaths } from "../api/execd.js";
+import type { paths as ExecdPaths } from "../api/execd.js";
 import type {
   ContentReplaceEntry,
   ContentReplaceResult,
@@ -223,6 +224,10 @@ function toPermission(e: {
  * - Implements streaming upload/download helpers
  */
 export class FilesystemAdapter implements SandboxFiles {
+  private static readonly identityInfoPath: keyof ExecdPaths =
+    "/v1/filesystem/{uid}/{gid}/files/info";
+  private static readonly identityBasePath =
+    FilesystemAdapter.identityInfoPath.replace("/files/info", "");
   private readonly fetch: typeof fetch;
 
   private static readonly Api = {
@@ -262,7 +267,7 @@ export class FilesystemAdapter implements SandboxFiles {
     const opts = {
       ...this.opts,
       baseUrl: this.identityBaseUrl.replace(/\/+$/, "") +
-        "/v1/filesystem/" + uid + "/" + gid,
+        FilesystemAdapter.identityBasePath + "/" + uid + "/" + gid,
     };
     return new FilesystemAdapter(createExecdClient(opts), opts, this.identityBaseUrl);
   }
