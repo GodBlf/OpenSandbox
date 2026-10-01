@@ -28,6 +28,7 @@ import com.alibaba.opensandbox.sandbox.domain.models.execd.filesystem.SetPermiss
 import com.alibaba.opensandbox.sandbox.domain.models.execd.filesystem.WriteEntry
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxEndpoint
 import com.alibaba.opensandbox.sandbox.domain.services.Filesystem
+import com.alibaba.opensandbox.sandbox.domain.services.IdentityFilesystem
 import com.alibaba.opensandbox.sandbox.infrastructure.adapters.converter.FilesystemConverter.toApiPermissionMap
 import com.alibaba.opensandbox.sandbox.infrastructure.adapters.converter.FilesystemConverter.toApiRenameFileItems
 import com.alibaba.opensandbox.sandbox.infrastructure.adapters.converter.FilesystemConverter.toApiReplaceFileContentMap
@@ -62,13 +63,14 @@ import java.nio.charset.Charset
 internal class FilesystemAdapter(
     private val httpClientProvider: HttpClientProvider,
     private val execdEndpoint: SandboxEndpoint,
-) : Filesystem {
+) : IdentityFilesystem {
     companion object {
         private const val FILESYSTEM_UPLOAD_PATH = "/files/upload"
         private const val FILESYSTEM_DOWNLOAD_PATH = "/files/download"
     }
 
     private val logger = LoggerFactory.getLogger(FilesystemAdapter::class.java)
+    private val unscopedEndpoint = execdEndpoint.endpoint.substringBefore("/v1/filesystem/")
     private val api =
         FilesystemApi(
             "${httpClientProvider.config.protocol}://${execdEndpoint.endpoint}",
@@ -92,7 +94,7 @@ internal class FilesystemAdapter(
         return FilesystemAdapter(
             httpClientProvider,
             SandboxEndpoint(
-                endpoint = execdEndpoint.endpoint.trimEnd('/') + "/v1/filesystem/$uid/$gid",
+                endpoint = unscopedEndpoint.trimEnd('/') + "/v1/filesystem/$uid/$gid",
                 headers = execdEndpoint.headers,
                 origin = execdEndpoint.origin,
             ),
