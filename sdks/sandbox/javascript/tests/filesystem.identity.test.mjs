@@ -83,6 +83,7 @@ test("replace contents accepts an empty successful response", async () => {
   const requests = [];
   const scoped = makeAdapter(requests, 200, "").withIdentity(1001, 2000);
   await scoped.replaceContents([{ path: "/file", oldContent: "a", newContent: "b" }]);
+  assert.deepEqual(await scoped.replaceContentsDetailed([{ path: "/file", oldContent: "a", newContent: "b" }]), []);
   assert.equal(requests[0].path, PREFIX + "/v1/filesystem/1001/2000/files/replace");
 });
 
