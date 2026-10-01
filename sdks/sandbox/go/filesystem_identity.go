@@ -43,27 +43,21 @@ type IdentityFilesystem interface {
 // FilesWithIdentity returns an independent filesystem client for uid/gid.
 // Unsupported servers fail; requests never fall back to the default identity.
 func (e *ExecdClient) FilesWithIdentity(uid, gid uint32) (IdentityFilesystem, error) {
-	if uid == ^uint32(0) || gid == ^uint32(0) {
-		return nil, fmt.Errorf("opensandbox: filesystem uid/gid must be at most 4294967294")
+	if uid > ^uint32(0)-1 {
+		return nil, &InvalidArgumentError{Field: "uid", Message: "must be at most 4294967294"}
+	}
+	if gid > ^uint32(0)-1 {
+		return nil, &InvalidArgumentError{Field: "gid", Message: "must be at most 4294967294"}
 	}
 	if e == nil || e.client == nil {
 		return nil, fmt.Errorf("opensandbox: execd client not initialized")
 	}
 	source := e.client
-	headers := make(map[string]string, len(source.headers))
-	for name, value := range source.headers {
-		headers[name] = value
+	baseURL := source.baseURL
+	if marker := strings.Index(baseURL, "/v1/filesystem/"); marker >= 0 {
+		baseURL = baseURL[:marker]
 	}
-	// Construct a fresh client rather than copying its sync.Once streaming state.
-	scoped := &Client{
-		baseURL:    strings.TrimRight(source.baseURL, "/") + fmt.Sprintf("/v1/filesystem/%d/%d", uid, gid),
-		apiKey:     source.apiKey,
-		authHeader: source.authHeader,
-		httpClient: source.httpClient,
-		timeout:    source.timeout,
-		headers:    headers,
-		retry:      source.retry,
-	}
+	scoped := source.cloneWithBaseURL(strings.TrimRight(baseURL, "/") + fmt.Sprintf("/v1/filesystem/%d/%d", uid, gid))
 	return &ExecdClient{client: scoped}, nil
 }
 
