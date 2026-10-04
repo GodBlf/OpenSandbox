@@ -39,6 +39,7 @@ from opensandbox.adapters.sandboxes_adapter import encode_metadata_filter
 from opensandbox.api.lifecycle.types import UNSET
 from opensandbox.config.connection_sync import ConnectionConfigSync
 from opensandbox.internal.readiness import constrain_readiness_request
+from opensandbox.models.forks import ForkOperation, ForkRequest
 from opensandbox.models.sandboxes import (
     CreateSnapshotRequest,
     CredentialProxyConfig,
@@ -445,6 +446,33 @@ class SandboxesAdapterSync(SandboxesSync):
         except Exception as e:
             logger.warning(f"Failed to kill sandbox {sandbox_id}: {e}")
             raise ExceptionConverter.to_sandbox_exception(e) from e
+
+
+    def fork(self, sandbox_id: str, request: ForkRequest, idempotency_key: str | None = None) -> ForkOperation:
+        from opensandbox.api.lifecycle.api.sandboxes import fork_sandbox
+        from opensandbox.api.lifecycle.models import ForkOperation as ApiOperation
+        from opensandbox.api.lifecycle.models import ForkSandboxRequest as ApiRequest
+        try:
+            response = fork_sandbox.sync_detailed(
+                sandbox_id=sandbox_id, client=self._get_client(),
+                body=ApiRequest.from_dict(request.to_wire()), idempotency_key=idempotency_key or UNSET,
+            )
+            handle_api_error(response, "Fork sandbox")
+            parsed = require_parsed(response, ApiOperation, "Fork sandbox")
+            return ForkOperation.model_validate(parsed.to_dict())
+        except Exception as exc:
+            raise ExceptionConverter.to_sandbox_exception(exc) from exc
+
+    def get_fork(self, fork_id: str) -> ForkOperation:
+        from opensandbox.api.lifecycle.api.sandboxes import get_fork
+        from opensandbox.api.lifecycle.models import ForkOperation as ApiOperation
+        try:
+            response = get_fork.sync_detailed(fork_id=fork_id, client=self._get_client())
+            handle_api_error(response, "Get fork")
+            parsed = require_parsed(response, ApiOperation, "Get fork")
+            return ForkOperation.model_validate(parsed.to_dict())
+        except Exception as exc:
+            raise ExceptionConverter.to_sandbox_exception(exc) from exc
 
     def create_snapshot(
         self, sandbox_id: str, request: CreateSnapshotRequest | None = None

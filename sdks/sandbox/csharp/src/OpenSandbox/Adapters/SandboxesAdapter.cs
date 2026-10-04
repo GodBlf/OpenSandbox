@@ -24,8 +24,22 @@ namespace OpenSandbox.Adapters;
 /// <summary>
 /// Adapter for the sandbox lifecycle service.
 /// </summary>
-internal sealed class SandboxesAdapter : ISandboxes
+internal sealed class SandboxesAdapter : ISandboxes, IForkSandboxes
 {
+    public Task<ForkOperation> ForkAsync(string sandboxId, ForkRequest request, string? idempotencyKey = null, CancellationToken cancellationToken = default)
+    {
+        var seconds = request.Timeout.TotalSeconds;
+        if (seconds < 60 || seconds != Math.Truncate(seconds))
+            throw new ArgumentException("Fork timeout must be whole seconds and at least 60.", nameof(request));
+        return _client.PostAsync<ForkOperation>(
+            $"/sandboxes/{Uri.EscapeDataString(sandboxId)}/fork",
+            new { timeout = (long)seconds, overrides = request.Overrides }, cancellationToken,
+            headers: idempotencyKey is null ? null : new Dictionary<string, string> { ["Idempotency-Key"] = idempotencyKey });
+    }
+
+    public Task<ForkOperation> GetForkAsync(string forkId, CancellationToken cancellationToken = default)
+        => _client.GetAsync<ForkOperation>($"/forks/{Uri.EscapeDataString(forkId)}", cancellationToken: cancellationToken);
+
     private readonly HttpClientWrapper _client;
     private readonly EndpointCache? _endpointCache;
 

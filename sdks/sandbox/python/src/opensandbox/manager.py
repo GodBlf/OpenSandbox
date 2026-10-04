@@ -20,12 +20,15 @@ This module provides a centralized interface for managing sandbox instances,
 enabling administrative operations and sandbox discovery following the Kotlin SDK pattern.
 """
 
+import asyncio
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 
 from opensandbox.adapters.factory import AdapterFactory
 from opensandbox.config import ConnectionConfig
 from opensandbox.models.diagnostics import DiagnosticContent
+from opensandbox.models.forks import ForkOperation, ForkRequest, ForkWaitTimeout
 from opensandbox.models.sandboxes import (
     CreateSnapshotRequest,
     PagedSandboxInfos,
@@ -267,6 +270,27 @@ class SandboxManager:
         """
         logger.info(f"Resuming sandbox: {sandbox_id}")
         await self._sandbox_service.resume_sandbox(sandbox_id)
+
+    async def fork(self, sandbox_id: str, request: ForkRequest, idempotency_key: str | None = None) -> ForkOperation:
+        """Submit a single-copy fork; poll get_fork or wait_for_fork for completion."""
+        return await self._sandbox_service.fork(sandbox_id, request, idempotency_key)
+
+    async def get_fork(self, fork_id: str) -> ForkOperation:
+        return await self._sandbox_service.get_fork(fork_id)
+
+    async def wait_for_fork(self, fork_id: str, timeout: timedelta = timedelta(minutes=30), polling_interval: timedelta = timedelta(seconds=2)) -> ForkOperation:
+        """Wait for either terminal state without cancelling or deleting resources."""
+        if timeout.total_seconds() <= 0 or polling_interval.total_seconds() <= 0:
+            raise ValueError("Wait timeout and polling interval must be positive.")
+        deadline = time.monotonic() + timeout.total_seconds()
+        while True:
+            operation = await self.get_fork(fork_id)
+            if operation.status.state in {"Succeeded", "Failed"}:
+                return operation
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ForkWaitTimeout(fork_id)
+            await asyncio.sleep(min(polling_interval.total_seconds(), remaining))
 
     async def create_snapshot(
         self, sandbox_id: str, name: str | None = None

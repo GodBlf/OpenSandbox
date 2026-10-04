@@ -104,12 +104,21 @@ internal sealed class HttpClientWrapper
     public async Task<T> PostAsync<T>(
         string path,
         object? body = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IReadOnlyDictionary<string, string>? headers = null)
     {
         var url = BuildUrl(path);
         _logger.LogDebug("HTTP POST {Url}", url);
         using var request = new HttpRequestMessage(HttpMethod.Post, url);
         ApplyDefaultHeaders(request);
+        if (headers is not null)
+        {
+            foreach (var pair in headers)
+            {
+                request.Headers.Remove(pair.Key);
+                request.Headers.TryAddWithoutValidation(pair.Key, pair.Value);
+            }
+        }
 
         if (body != null)
         {

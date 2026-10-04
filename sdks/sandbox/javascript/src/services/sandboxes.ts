@@ -37,6 +37,8 @@ import type {
 } from "../models/templates.js";
 
 export interface Sandboxes {
+  fork(sandboxId: string, request: import("../models/forks.js").ForkRequest, idempotencyKey?: string): Promise<import("../models/forks.js").ForkOperation>;
+  getFork(forkId: string): Promise<import("../models/forks.js").ForkOperation>;
   createSandbox(
     req: CreateSandboxRequest,
     signal?: AbortSignal,

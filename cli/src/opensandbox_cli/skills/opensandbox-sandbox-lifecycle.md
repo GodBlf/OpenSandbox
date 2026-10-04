@@ -9,6 +9,17 @@ Use OpenSandbox lifecycle commands directly instead of giving generic container 
 
 ## When To Use
 
+To branch a running Linux sandbox without user volumes:
+
+```bash
+osb sandbox fork <sandbox-id> --timeout 30m --wait -o json
+osb sandbox fork-status <fork-id> -o json
+```
+
+Fork copies rootfs, not memory or running commands. Save application progress to
+disk first. Reuse `--idempotency-key` for submission retries. A wait timeout does
+not cancel the server operation; query its fork ID before submitting another.
+
 - the user wants to create a sandbox for a task or workflow
 - the user wants to create a sandbox from a template (golden image) or restore a snapshot
 - the user wants to build, inspect, list, or delete templates

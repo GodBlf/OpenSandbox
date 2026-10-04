@@ -97,6 +97,26 @@ function encodeMetadataFilter(metadata: Record<string, string>): string {
 }
 
 export class SandboxesAdapter implements Sandboxes {
+  async fork(sandboxId: string, request: import("../models/forks.js").ForkRequest, idempotencyKey?: string): Promise<import("../models/forks.js").ForkOperation> {
+    if (!Number.isInteger(request.timeoutSeconds) || request.timeoutSeconds < 60) {
+      throw new Error("Fork timeout must be whole seconds and at least 60.");
+    }
+    const { data, error, response } = await this.client.POST("/sandboxes/{sandboxId}/fork", {
+      params: { path: { sandboxId }, header: { "Idempotency-Key": idempotencyKey } },
+      body: { timeout: request.timeoutSeconds, overrides: request.overrides },
+    });
+    throwOnOpenApiFetchError({ error, response }, "Fork sandbox failed");
+    if (!data) throw new Error("Fork response missing");
+    return { ...data, createdAt: this.parseIsoDate("createdAt", data.createdAt), updatedAt: this.parseIsoDate("updatedAt", data.updatedAt) };
+  }
+
+  async getFork(forkId: string): Promise<import("../models/forks.js").ForkOperation> {
+    const { data, error, response } = await this.client.GET("/forks/{forkId}", { params: { path: { forkId } } });
+    throwOnOpenApiFetchError({ error, response }, "Get fork failed");
+    if (!data) throw new Error("Fork response missing");
+    return { ...data, createdAt: this.parseIsoDate("createdAt", data.createdAt), updatedAt: this.parseIsoDate("updatedAt", data.updatedAt) };
+  }
+
   private readonly endpointCache: EndpointCache | null;
 
   constructor(

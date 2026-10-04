@@ -31,6 +31,29 @@ namespace OpenSandbox;
 /// </remarks>
 public sealed class SandboxManager : IAsyncDisposable
 {
+    public Task<ForkOperation> ForkAsync(string sandboxId, ForkRequest request, string? idempotencyKey = null, CancellationToken cancellationToken = default)
+        => _sandboxes.ForkAsync(sandboxId, request, idempotencyKey, cancellationToken);
+
+    public Task<ForkOperation> GetForkAsync(string forkId, CancellationToken cancellationToken = default)
+        => _sandboxes.GetForkAsync(forkId, cancellationToken);
+
+    public async Task<ForkOperation> WaitForForkAsync(string forkId, TimeSpan? timeout = null, TimeSpan? pollingInterval = null, CancellationToken cancellationToken = default)
+    {
+        var budget = timeout ?? TimeSpan.FromMinutes(30);
+        var interval = pollingInterval ?? TimeSpan.FromSeconds(2);
+        if (budget <= TimeSpan.Zero || interval <= TimeSpan.Zero)
+            throw new ArgumentException("Wait timeout and polling interval must be positive.");
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        while (true)
+        {
+            var operation = await GetForkAsync(forkId, cancellationToken).ConfigureAwait(false);
+            if (operation.Status.State is "Succeeded" or "Failed") return operation;
+            var remaining = budget - clock.Elapsed;
+            if (remaining <= TimeSpan.Zero) throw new ForkWaitTimeoutException(forkId);
+            await Task.Delay(remaining < interval ? remaining : interval, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
     private readonly ISandboxes _sandboxes;
     private readonly ConnectionConfig _connectionConfig;
     private readonly HttpClientProvider _httpClientProvider;

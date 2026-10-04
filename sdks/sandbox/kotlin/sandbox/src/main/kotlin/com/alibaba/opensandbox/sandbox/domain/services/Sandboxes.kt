@@ -18,6 +18,8 @@ package com.alibaba.opensandbox.sandbox.domain.services
 
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.CreateTemplateRequest
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.CredentialProxyConfig
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.ForkOperation
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.ForkRequest
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.NetworkPolicy
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.PagedSandboxInfos
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.PagedSnapshotInfos
@@ -45,6 +47,15 @@ import java.time.OffsetDateTime
  * and termination operations, completely isolating business logic from API implementation details.
  */
 interface Sandboxes {
+    fun fork(
+        sandboxId: String,
+        request: ForkRequest,
+        idempotencyKey: String? = null,
+    ): ForkOperation = throw UnsupportedOperationException("This custom lifecycle adapter does not implement fork.")
+
+    fun getFork(forkId: String): ForkOperation =
+        throw UnsupportedOperationException("This custom lifecycle adapter does not implement fork.")
+
     /**
      * Creates a new sandbox with the specified configuration.
      *

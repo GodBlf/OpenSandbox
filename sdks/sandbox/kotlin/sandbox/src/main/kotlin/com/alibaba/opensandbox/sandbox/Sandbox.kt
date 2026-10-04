@@ -26,6 +26,8 @@ import com.alibaba.opensandbox.sandbox.domain.models.diagnostics.DiagnosticConte
 import com.alibaba.opensandbox.sandbox.domain.models.execd.DEFAULT_EGRESS_PORT
 import com.alibaba.opensandbox.sandbox.domain.models.execd.DEFAULT_EXECD_PORT
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.CredentialProxyConfig
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.ForkOperation
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.ForkRequest
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.NetworkPolicy
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.NetworkRule
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.PlatformSpec
@@ -729,6 +731,12 @@ class Sandbox internal constructor(
     fun patchMetadata(patch: Map<String, String?>): SandboxInfo {
         return sandboxService.patchSandboxMetadata(id, patch)
     }
+
+    @JvmOverloads
+    fun fork(
+        request: ForkRequest,
+        idempotencyKey: String? = null,
+    ): ForkOperation = sandboxService.fork(id, request, idempotencyKey)
 
     fun createSnapshot(name: String? = null): SnapshotInfo = sandboxService.createSnapshot(id, name)
 

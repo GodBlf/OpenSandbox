@@ -58,6 +58,45 @@ def sandbox_group(ctx: click.Context) -> None:
         click.echo(ctx.get_help())
 
 
+@sandbox_group.command("fork")
+@click.argument("sandbox_id")
+@click.option("--timeout", required=True, type=DURATION, help="Target lifetime, e.g. 30m.")
+@click.option("--overrides", type=click.Path(exists=True, dir_okay=False), help="JSON file containing fork configuration overrides.")
+@click.option("--idempotency-key", help="Retry key for this fork request.")
+@click.option("--wait", "wait_for_result", is_flag=True, help="Wait for the operation to finish.")
+@output_option("table", "json", "yaml")
+@click.pass_obj
+@handle_errors
+def sandbox_fork(obj, sandbox_id, timeout, overrides, idempotency_key, wait_for_result, output_format):
+    """Fork one independent rootfs copy; memory and user volumes are not copied."""
+    from opensandbox.models.forks import ForkOverrides, ForkRequest
+
+    prepare_output(obj, output_format, allowed=("table", "json", "yaml"), fallback="json")
+    values = load_json_object(overrides) if overrides else {}
+    request = ForkRequest(timeout=timeout, overrides=ForkOverrides.model_validate(values))
+    manager = obj.get_manager()
+    operation = manager.fork(sandbox_id, request, idempotency_key)
+    if wait_for_result:
+        operation = manager.wait_for_fork(operation.id)
+    obj.output.print_model(operation, title="Sandbox Fork")
+    if operation.status.state == "Failed":
+        raise click.ClickException(f"Fork {operation.id} failed: {operation.status.reason}")
+
+
+@sandbox_group.command("fork-status")
+@click.argument("fork_id")
+@output_option("table", "json", "yaml")
+@click.pass_obj
+@handle_errors
+def sandbox_fork_status(obj, fork_id, output_format):
+    """Query a durable fork operation after submission or a client timeout."""
+    prepare_output(obj, output_format, allowed=("table", "json", "yaml"), fallback="json")
+    operation = obj.get_manager().get_fork(fork_id)
+    obj.output.print_model(operation, title="Sandbox Fork")
+    if operation.status.state == "Failed":
+        raise click.ClickException(f"Fork {operation.id} failed: {operation.status.reason}")
+
+
 _SANDBOX_STATE_CANONICAL = {
     state.lower(): state for state in SandboxState.values()
 }

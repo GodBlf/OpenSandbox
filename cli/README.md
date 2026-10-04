@@ -80,6 +80,15 @@ osb sandbox create -o json
 
 ### 3. Verify it is usable
 
+Fork a running sandbox's rootfs into one independent copy:
+
+```bash
+osb sandbox fork <sandbox-id> --timeout 30m --wait -o json
+osb sandbox fork-status <fork-id> -o json
+```
+
+See [fork semantics and configuration](../docs/guides/sandbox-fork.md).
+
 ```bash
 osb sandbox get <sandbox-id> -o json
 osb sandbox health <sandbox-id> -o json

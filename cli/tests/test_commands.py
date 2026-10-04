@@ -31,6 +31,7 @@ import pytest
 from click.testing import CliRunner
 from opensandbox.exceptions import SandboxApiException
 from opensandbox.models.diagnostics import DiagnosticContent
+from opensandbox.models.forks import ForkOperation
 from opensandbox.models.sandboxes import (
     PagedSnapshotInfos,
     PaginationInfo,
@@ -52,6 +53,33 @@ from opensandbox_cli.output import OutputFormatter
 @pytest.fixture()
 def runner() -> CliRunner:
     return CliRunner()
+
+
+def test_sandbox_fork_wait_and_query(runner):
+    now = datetime.now(timezone.utc)
+    operation = ForkOperation.model_validate({"id": "fork-1", "sourceSandboxId": "source",
+        "status": {"state": "Pending"}, "createdAt": now, "updatedAt": now})
+    manager = MagicMock()
+    manager.fork.return_value = operation
+    ready = operation.model_copy(update={"status": operation.status.model_copy(update={"state": "Succeeded"}), "sandbox_id": "target"})
+    manager.wait_for_fork.return_value = ready
+    manager.get_fork.return_value = ready
+    result = _invoke(runner, ["sandbox", "fork", "source", "--timeout", "30m", "--wait", "--idempotency-key", "retry", "-o", "json"], manager=manager)
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["sandbox_id"] == "target"
+    assert manager.fork.call_args.args[1].timeout == timedelta(minutes=30)
+    assert manager.fork.call_args.args[2] == "retry"
+    manager.wait_for_fork.assert_called_once_with("fork-1")
+    result = _invoke(runner, ["sandbox", "fork-status", "fork-1", "-o", "json"], manager=manager)
+    assert result.exit_code == 0
+    manager.get_fork.assert_called_once_with("fork-1")
+
+
+def test_sandbox_fork_rejects_short_timeout(runner):
+    manager = MagicMock()
+    result = _invoke(runner, ["sandbox", "fork", "source", "--timeout", "1s", "-o", "json"], manager=manager)
+    assert result.exit_code != 0
+    manager.fork.assert_not_called()
 
 
 def _build_mock_client_context(

@@ -23,6 +23,7 @@ This is the sync counterpart of :mod:`opensandbox.services.sandbox`.
 from datetime import datetime, timedelta
 from typing import Protocol
 
+from opensandbox.models.forks import ForkOperation, ForkRequest
 from opensandbox.models.sandboxes import (
     CreateSnapshotRequest,
     CredentialProxyConfig,
@@ -258,6 +259,14 @@ class SandboxesSync(Protocol):
         Raises:
             SandboxException: If the operation fails.
         """
+        ...
+
+    def fork(self, sandbox_id: str, request: ForkRequest, idempotency_key: str | None = None) -> ForkOperation:
+        """Submit one rootfs-only fork operation."""
+        ...
+
+    def get_fork(self, fork_id: str) -> ForkOperation:
+        """Get the durable operation result."""
         ...
 
     def create_snapshot(

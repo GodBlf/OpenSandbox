@@ -33,6 +33,7 @@ import type {
   TemplateInfo,
 } from "./models/templates.js";
 import type { Sandboxes } from "./services/sandboxes.js";
+import { ForkWaitTimeout, type ForkRequest, type ForkOperation } from "./models/forks.js";
 
 export interface SandboxManagerOptions {
   /**
@@ -70,6 +71,30 @@ export interface SandboxFilter {
  * For interacting *inside* a sandbox, use {@link Sandbox}.
  */
 export class SandboxManager {
+  fork(sandboxId: string, request: ForkRequest, idempotencyKey?: string): Promise<ForkOperation> {
+    return this.sandboxes.fork(sandboxId, request, idempotencyKey);
+  }
+
+  getFork(forkId: string): Promise<ForkOperation> {
+    return this.sandboxes.getFork(forkId);
+  }
+
+  async waitForFork(forkId: string, opts: { timeoutSeconds?: number; pollingIntervalSeconds?: number } = {}): Promise<ForkOperation> {
+    const timeout = opts.timeoutSeconds ?? 1800;
+    const interval = opts.pollingIntervalSeconds ?? 2;
+    if (!Number.isFinite(timeout) || !Number.isFinite(interval) || timeout <= 0 || interval <= 0) {
+      throw new Error("Wait timeout and polling interval must be positive finite seconds.");
+    }
+    const deadline = performance.now() + timeout * 1000;
+    while (true) {
+      const operation = await this.getFork(forkId);
+      if (operation.status.state === "Succeeded" || operation.status.state === "Failed") return operation;
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) throw new ForkWaitTimeout(forkId);
+      await new Promise((resolve) => setTimeout(resolve, Math.min(interval * 1000, remaining)));
+    }
+  }
+
   private readonly sandboxes: Sandboxes;
   private readonly connectionConfig: ConnectionConfig;
   /** True when this manager allocated (and may close) the transport. */

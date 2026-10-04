@@ -36,6 +36,7 @@ from opensandbox.internal.readiness import (
     validate_polling_interval,
 )
 from opensandbox.models.diagnostics import DiagnosticContent
+from opensandbox.models.forks import ForkOperation, ForkRequest
 from opensandbox.models.sandboxes import (
     CreateSnapshotRequest,
     CredentialProxyConfig,
@@ -347,6 +348,10 @@ class SandboxSync:
         String values add or replace keys; None deletes keys.
         """
         return self._sandbox_service.patch_sandbox_metadata(self.id, patch)
+
+    def fork(self, request: ForkRequest, idempotency_key: str | None = None) -> ForkOperation:
+        """Submit one independent rootfs copy; use SandboxManager to await its result."""
+        return self._sandbox_service.fork(self.id, request, idempotency_key)
 
     def create_snapshot(self, name: str | None = None) -> SnapshotInfo:
         """Create a persistent snapshot from this sandbox (blocking)."""
