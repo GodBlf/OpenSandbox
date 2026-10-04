@@ -27,28 +27,6 @@ namespace OpenSandbox.Tests;
 public class SandboxesAdapterTests
 {
     [Fact]
-    public async Task ForkAsync_ShouldMapDurationAndEmptyOverride()
-    {
-        var payload = """
-            {"id":"fork-1","sourceSandboxId":"source","status":{"state":"Pending"},"createdAt":"2026-10-04T08:00:00Z","updatedAt":"2026-10-04T08:00:00Z","cleanupPending":false}
-            """;
-        var handler = new CapturingHandler(payload);
-        using var client = new HttpClient(handler);
-        var adapter = new SandboxesAdapter(new HttpClientWrapper(client, "http://localhost:8080/v1"));
-        var operation = await adapter.ForkAsync("source", new ForkRequest
-        {
-            Timeout = TimeSpan.FromMinutes(30),
-            Overrides = new ForkOverrides { Env = new Dictionary<string, string?>() }
-        }, "retry");
-        operation.Id.Should().Be("fork-1");
-        handler.PathAndQuery.Should().Be("/v1/sandboxes/source/fork");
-        handler.IdempotencyKey.Should().Be("retry");
-        using var body = JsonDocument.Parse(handler.RequestBody!);
-        body.RootElement.GetProperty("timeout").GetInt32().Should().Be(1800);
-        body.RootElement.GetProperty("overrides").GetProperty("env").EnumerateObject().Should().BeEmpty();
-    }
-
-    [Fact]
     public async Task GetSandboxEndpointAsync_ShouldIncludeUseServerProxyQueryParam()
     {
         // Arrange
@@ -683,7 +661,6 @@ public class SandboxesAdapterTests
 
     private sealed class CapturingHandler(string payload) : HttpMessageHandler
     {
-        public string? IdempotencyKey { get; private set; }
         public HttpMethod? Method { get; private set; }
 
         public string? PathAndQuery { get; private set; }
@@ -695,7 +672,6 @@ public class SandboxesAdapterTests
             CancellationToken cancellationToken)
         {
             Method = request.Method;
-            IdempotencyKey = request.Headers.TryGetValues("Idempotency-Key", out var keys) ? keys.FirstOrDefault() : null;
             PathAndQuery = request.RequestUri?.PathAndQuery;
             RequestBody = request.Content is null
                 ? null

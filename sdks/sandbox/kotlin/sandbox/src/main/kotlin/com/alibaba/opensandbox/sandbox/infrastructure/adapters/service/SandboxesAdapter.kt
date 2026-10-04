@@ -31,9 +31,6 @@ import com.alibaba.opensandbox.sandbox.api.infrastructure.Success
 import com.alibaba.opensandbox.sandbox.api.models.Endpoint
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.CreateTemplateRequest
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.CredentialProxyConfig
-import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.ForkOperation
-import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.ForkRequest
-import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.ForkStatus
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.NetworkPolicy
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.PagedSandboxInfos
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.PagedSnapshotInfos
@@ -54,7 +51,6 @@ import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.TemplateInfo
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.Volume
 import com.alibaba.opensandbox.sandbox.domain.services.Sandboxes
 import com.alibaba.opensandbox.sandbox.infrastructure.adapters.converter.SandboxModelConverter
-import com.alibaba.opensandbox.sandbox.infrastructure.adapters.converter.SandboxModelConverter.toApiNetworkPolicy
 import com.alibaba.opensandbox.sandbox.infrastructure.adapters.converter.SandboxModelConverter.toApiRenewRequest
 import com.alibaba.opensandbox.sandbox.infrastructure.adapters.converter.SandboxModelConverter.toPagedSandboxInfos
 import com.alibaba.opensandbox.sandbox.infrastructure.adapters.converter.SandboxModelConverter.toPagedSnapshotInfos
@@ -81,9 +77,6 @@ import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.time.Duration
 import java.time.OffsetDateTime
-import com.alibaba.opensandbox.sandbox.api.models.ForkOperation as ApiForkOperation
-import com.alibaba.opensandbox.sandbox.api.models.ForkOverrides as ApiForkOverrides
-import com.alibaba.opensandbox.sandbox.api.models.ForkSandboxRequest as ApiForkRequest
 import com.alibaba.opensandbox.sandbox.api.models.Sandbox as ApiSandbox
 
 /**
@@ -96,53 +89,6 @@ internal class SandboxesAdapter(
     private val provider: HttpClientProvider,
 ) : Sandboxes {
     private val logger = LoggerFactory.getLogger(SandboxesAdapter::class.java)
-
-    override fun fork(
-        sandboxId: String,
-        request: ForkRequest,
-        idempotencyKey: String?,
-    ): ForkOperation {
-        return try {
-            val overrides =
-                request.overrides?.let {
-                    ApiForkOverrides(
-                        env = it.env,
-                        resourceLimits = it.resourceLimits,
-                        resourceRequests = it.resourceRequests,
-                        networkPolicy =
-                            it.networkPolicy?.let { policy ->
-                                policy.toApiNetworkPolicy()
-                            },
-                        metadata = it.metadata,
-                        entrypoint = it.entrypoint,
-                    )
-                }
-            api.forkSandbox(sandboxId, ApiForkRequest(request.timeout.seconds.toInt(), overrides), idempotencyKey)
-                .toForkOperation()
-        } catch (e: Exception) {
-            throw e.toSandboxException()
-        }
-    }
-
-    override fun getFork(forkId: String): ForkOperation {
-        return try {
-            api.getFork(forkId).toForkOperation()
-        } catch (e: Exception) {
-            throw e.toSandboxException()
-        }
-    }
-
-    private fun ApiForkOperation.toForkOperation() =
-        ForkOperation(
-            id,
-            sourceSandboxId,
-            ForkStatus(status.state.value, status.reason, status.message),
-            snapshotId,
-            sandboxId,
-            createdAt,
-            updatedAt,
-            cleanupPending,
-        )
 
     private val api = SandboxesApi(provider.config.getBaseUrl(), provider.authenticatedClient)
     private val snapshotApi = SnapshotsApi(provider.config.getBaseUrl(), provider.authenticatedClient)

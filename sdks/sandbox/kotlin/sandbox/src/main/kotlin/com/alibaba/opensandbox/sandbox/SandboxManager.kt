@@ -23,9 +23,6 @@ import com.alibaba.opensandbox.sandbox.domain.exceptions.SandboxReadyTimeoutExce
 import com.alibaba.opensandbox.sandbox.domain.exceptions.SnapshotFailedException
 import com.alibaba.opensandbox.sandbox.domain.models.diagnostics.DiagnosticContent
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.CreateTemplateRequest
-import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.ForkOperation
-import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.ForkRequest
-import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.ForkWaitTimeoutException
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.PagedSandboxInfos
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.PagedSnapshotInfos
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.PagedTemplateInfos
@@ -88,34 +85,6 @@ class SandboxManager internal constructor(
     private val httpClientProvider: HttpClientProvider,
     private val diagnosticsService: Diagnostics,
 ) : AutoCloseable {
-    @JvmOverloads
-    fun fork(
-        sandboxId: String,
-        request: ForkRequest,
-        idempotencyKey: String? = null,
-    ): ForkOperation = sandboxService.fork(sandboxId, request, idempotencyKey)
-
-    fun getFork(forkId: String): ForkOperation = sandboxService.getFork(forkId)
-
-    /** Local waiting timeout never cancels the server operation. */
-    @JvmOverloads
-    fun waitForFork(
-        forkId: String,
-        timeout: Duration = Duration.ofMinutes(30),
-        pollingInterval: Duration = Duration.ofSeconds(2),
-    ): ForkOperation {
-        require(!timeout.isNegative && !timeout.isZero && !pollingInterval.isNegative && !pollingInterval.isZero)
-        val start = System.nanoTime()
-        while (true) {
-            val operation = getFork(forkId)
-            if (operation.status.state == "Succeeded" || operation.status.state == "Failed") return operation
-            val remaining = timeout.minusNanos(System.nanoTime() - start)
-            if (remaining.isNegative || remaining.isZero) throw ForkWaitTimeoutException(forkId)
-            val delay = if (remaining < pollingInterval) remaining else pollingInterval
-            Thread.sleep(delay.toMillis().coerceAtLeast(1))
-        }
-    }
-
     private val logger = LoggerFactory.getLogger(SandboxManager::class.java)
 
     /**

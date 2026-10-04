@@ -789,12 +789,6 @@ public sealed class Sandbox : IAsyncDisposable
     }
 
     /// <summary>
-    /// Submits an independent rootfs fork from this sandbox.
-    /// </summary>
-    public Task<ForkOperation> ForkAsync(ForkRequest request, string? idempotencyKey = null, CancellationToken cancellationToken = default)
-        => _sandboxes.ForkAsync(Id, request, idempotencyKey, cancellationToken);
-
-    /// <summary>
     /// Creates a persistent snapshot from this sandbox.
     /// </summary>
     public Task<SnapshotInfo> CreateSnapshotAsync(

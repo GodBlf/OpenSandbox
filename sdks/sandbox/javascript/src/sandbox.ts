@@ -979,10 +979,6 @@ export class Sandbox {
     }
   }
 
-  async fork(request: import("./models/forks.js").ForkRequest, idempotencyKey?: string): Promise<import("./models/forks.js").ForkOperation> {
-    return this.sandboxes.fork(this.id, request, idempotencyKey);
-  }
-
   async getInfo(): Promise<SandboxInfo> {
     return await this.sandboxes.getSandbox(this.id);
   }

@@ -49,34 +49,6 @@ import org.junit.jupiter.api.Test
 import java.time.Duration
 
 class SandboxesAdapterTest {
-    @Test
-    fun `fork maps duration empty overrides and retry key`() {
-        mockWebServer.enqueue(
-            MockResponse().setResponseCode(202).setHeader("Content-Type", "application/json").setBody(
-                """
-                {"id":"fork-1","sourceSandboxId":"source","status":{"state":"Pending"},
-                 "createdAt":"2026-10-04T08:00:00Z","updatedAt":"2026-10-04T08:00:00Z","cleanupPending":false}
-                """.trimIndent(),
-            ),
-        )
-        val result =
-            sandboxesAdapter.fork(
-                "source",
-                com.alibaba.opensandbox.sandbox.domain.models.sandboxes.ForkRequest(
-                    Duration.ofMinutes(30),
-                    com.alibaba.opensandbox.sandbox.domain.models.sandboxes.ForkOverrides(env = emptyMap()),
-                ),
-                "retry",
-            )
-        assertEquals("fork-1", result.id)
-        val request = mockWebServer.takeRequest()
-        assertEquals("/v1/sandboxes/source/fork", request.path)
-        assertEquals("retry", request.getHeader("Idempotency-Key"))
-        val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
-        assertEquals("1800", body["timeout"]?.jsonPrimitive?.content)
-        assertEquals(0, body["overrides"]?.jsonObject?.get("env")?.jsonObject?.size)
-    }
-
     private lateinit var mockWebServer: MockWebServer
     private lateinit var sandboxesAdapter: SandboxesAdapter
     private lateinit var httpClientProvider: HttpClientProvider

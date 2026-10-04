@@ -51,42 +51,6 @@ For an uncertain runtime request, cleanup keeps checking for late resources.
 `cleanupPending` can remain true indefinitely if the runtime never resolves
 that request. Inspect server logs and runtime resources before manual cleanup.
 
-## SDK and CLI
-
-With an existing Python `SandboxManager`:
-
-```python
-from datetime import timedelta
-from opensandbox.models.forks import ForkOverrides, ForkRequest
-
-operation = await manager.fork(
-    source_id,
-    ForkRequest(
-        timeout=timedelta(minutes=30),
-        overrides=ForkOverrides(metadata={"experiment": "candidate-a"}),
-    ),
-    idempotency_key="candidate-a",
-)
-result = await manager.wait_for_fork(operation.id)
-if result.status.state == "Failed":
-    raise RuntimeError(f"Fork {result.id} failed: {result.status.reason}")
-print(result.sandbox_id)
-```
-
-The synchronous Python SDK provides the same methods without `await`.
-JavaScript, Go, Java/Kotlin and C# SDKs also expose submit, status and wait
-methods. Waiting times out locally and leaves the server operation running;
-the timeout exception includes the operation ID for subsequent status queries.
-
-```bash
-osb sandbox fork SOURCE_ID --timeout 30m --idempotency-key candidate-a --wait
-osb sandbox fork-status FORK_ID
-```
-
-Use `--overrides overrides.json` with a JSON file containing only the fields
-inside the `overrides` object shown above.
-The CLI returns a nonzero exit code for a failed operation.
-
 ## Configuration
 
 User environment variables, effective resources, metadata, platform, security

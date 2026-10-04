@@ -100,8 +100,6 @@ export type {
 } from "./models/templates.js";
 
 export type { Sandboxes } from "./services/sandboxes.js";
-export { ForkWaitTimeout } from "./models/forks.js";
-export type { ForkRequest, ForkOverrides, ForkOperation } from "./models/forks.js";
 export type { CredentialVault, Egress } from "./services/egress.js";
 
 export { SandboxManager } from "./manager.js";

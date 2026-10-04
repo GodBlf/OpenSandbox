@@ -42,7 +42,6 @@ from opensandbox.adapters.converter.template_model_converter import (
 )
 from opensandbox.api.lifecycle.types import UNSET
 from opensandbox.config import ConnectionConfig
-from opensandbox.models.forks import ForkOperation, ForkRequest
 from opensandbox.models.sandboxes import (
     CreateSnapshotRequest,
     CredentialProxyConfig,
@@ -348,33 +347,6 @@ class SandboxesAdapter(Sandboxes):
         except Exception as e:
             logger.warning(f"Failed to patch sandbox {sandbox_id} metadata: {e}")
             raise ExceptionConverter.to_sandbox_exception(e) from e
-
-
-    async def fork(self, sandbox_id: str, request: ForkRequest, idempotency_key: str | None = None) -> ForkOperation:
-        from opensandbox.api.lifecycle.api.sandboxes import fork_sandbox
-        from opensandbox.api.lifecycle.models import ForkOperation as ApiOperation
-        from opensandbox.api.lifecycle.models import ForkSandboxRequest as ApiRequest
-        try:
-            response = await fork_sandbox.asyncio_detailed(
-                sandbox_id=sandbox_id, client=await self._get_client(),
-                body=ApiRequest.from_dict(request.to_wire()), idempotency_key=idempotency_key or UNSET,
-            )
-            handle_api_error(response, "Fork sandbox")
-            parsed = require_parsed(response, ApiOperation, "Fork sandbox")
-            return ForkOperation.model_validate(parsed.to_dict())
-        except Exception as exc:
-            raise ExceptionConverter.to_sandbox_exception(exc) from exc
-
-    async def get_fork(self, fork_id: str) -> ForkOperation:
-        from opensandbox.api.lifecycle.api.sandboxes import get_fork
-        from opensandbox.api.lifecycle.models import ForkOperation as ApiOperation
-        try:
-            response = await get_fork.asyncio_detailed(fork_id=fork_id, client=await self._get_client())
-            handle_api_error(response, "Get fork")
-            parsed = require_parsed(response, ApiOperation, "Get fork")
-            return ForkOperation.model_validate(parsed.to_dict())
-        except Exception as exc:
-            raise ExceptionConverter.to_sandbox_exception(exc) from exc
 
     async def create_snapshot(
         self, sandbox_id: str, request: CreateSnapshotRequest | None = None

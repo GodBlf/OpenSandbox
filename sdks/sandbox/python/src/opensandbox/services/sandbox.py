@@ -22,7 +22,6 @@ Protocol for sandbox lifecycle management operations.
 from datetime import datetime, timedelta
 from typing import Protocol
 
-from opensandbox.models.forks import ForkOperation, ForkRequest
 from opensandbox.models.sandboxes import (
     CreateSnapshotRequest,
     CredentialProxyConfig,
@@ -271,14 +270,6 @@ class Sandboxes(Protocol):
         Raises:
             SandboxException: if the operation fails
         """
-        ...
-
-    async def fork(self, sandbox_id: str, request: ForkRequest, idempotency_key: str | None = None) -> ForkOperation:
-        """Submit one rootfs-only fork operation."""
-        ...
-
-    async def get_fork(self, fork_id: str) -> ForkOperation:
-        """Get the durable operation result."""
         ...
 
     async def create_snapshot(
