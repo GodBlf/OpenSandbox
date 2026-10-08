@@ -3,7 +3,7 @@ title: Credential-Bound TLS Interception
 authors:
   - "@hpliStartAgain"
 creation-date: 2026-09-04
-last-updated: 2026-09-29
+last-updated: 2026-09-30
 status: implementing
 ---
 
@@ -952,19 +952,122 @@ exhaustion denies new bound admission rather than making it opaque, while
 unbound pass-through consumes no entry. One Registry instance accepts only one
 sidecar generation; a replacement process creates a fresh instance. Deactivation
 denies later non-exempt SNI-bearing decisions and returns existing memberships
-for the future owner to close, but does not close transports itself. Receiver
-publication, host-removal request fences, mitmproxy hooks, fast-sandbox budgets,
-and live traffic remain unwired.
+for the future owner to close, but does not close transports itself. The
+joint-publication owner described below remains separate from mitmproxy hooks,
+fast-sandbox budgets, and live traffic.
 
 The unused sidecar registry now also reports which still-tracked decrypted
 connections become newly uncovered when a validated decision snapshot is
 activated. It compares the old and new selector coverage of each admitted SNI
 under the same lock as new TLS admissions, so overlapping wildcard and exact
 selectors are evaluated semantically rather than by raw set subtraction.
-Already-uncovered entries are not reported again, but remain tracked until
-released. The returned tokens are only a future fence target: this step does
-not close transports, stop new HTTP requests or streams on old connections,
-couple registry activation to receiver commit, or authorize mutation ACK.
+Already-uncovered entries are not reported again on consecutive uncovered
+views, but remain tracked until released. Remove/readd/remove can report the
+same token again; a future transport owner must not reset its first retirement
+deadline on repeated notifications.
+
+The unused registry now permanently fences those tokens from its internal
+request-admission primitive. A Registry may bind one Receiver at construction;
+request admission without one denies. Under the Registry lock, `acquire_request`
+checks exact live token ownership, generation, and the monotonic connection
+fence, then acquires the Receiver snapshot and compares the complete revision.
+Only a coherent immutable Snapshot is returned. The sole nested lock order is
+Registry -> Receiver; successful admission linearizes when Receiver.acquire
+pins that snapshot. Neither later publication nor teardown revokes an already
+admitted request's bytes. Credential or request-selector updates retain the
+connection token, but new requests use the new snapshot once both views agree.
+Removed/readded hosts require a new connection; releasing a connection removes
+its fence without reusing its serial or accumulating tombstones.
+
+Standalone Receiver/Registry publication remains independent: either order
+fails closed while revisions disagree, with no old credential fallback. The
+internal joint-publication owner below removes that mismatch window for its
+owned pair. Live hooks and public mutation ACKs still require integration with
+the public mutation barrier and transport owner. Request admission is not full
+binding or destination authorization. No live HTTP request/stream uses this primitive yet; transport
+closure, HTTP/2 GOAWAY and request drain, including credential-only rotation
+drain, remain unimplemented. Holders must retain one snapshot through response
+redaction; this primitive provides neither live deadline enforcement nor zeroization.
+
+Successful internal request admission now also registers an exact, immutable
+request handle before returning, with the same pinned Snapshot as the result.
+Request records have a separate global capacity; the compatibility default is
+the connection capacity, not a production HTTP/2 sizing recommendation. An
+adapter must choose its budget explicitly. Exhaustion denies without waiting,
+eviction or pass-through, and one connection can consume the entire request
+budget; this is not per-connection fairness or tenant isolation.
+
+The future adapter must call `finish_request` on completion, cancellation and
+error paths. Exact terminal connection `release` also removes that connection's
+request records; copied tokens cannot release a real connection or its requests.
+Release is only for confirmed transport termination, not the start of drain.
+Host removal and Registry deactivation retain admitted requests for completion
+or terminal cleanup, and Receiver close does not revoke their immutable bytes.
+Empty connection indexes are removed and serials are never reused. Registration
+failures roll back partial indexes and expose only a fixed error.
+
+`pending_requests` exposes bounded, serial-ordered metadata pages containing
+only request serial, connection serial and complete revision, with optional
+exact-connection and revision filters. It exposes no Snapshot or finish handle.
+Each page is lock-consistent, but completion and new admission can change later
+pages; there is no frozen query view or high-watermark drain protocol. An empty
+page and `request_count` describe only Registry bookkeeping, not network drain,
+mutation ACK readiness, external Snapshot references or credential zeroization.
+The unused registry now records monotonic retirement deadlines at activation
+under its admission lock. Newly uncovered connections receive a deadline even
+when idle; unfinished requests pinned to older revisions receive independent
+deadlines, including on credential-only, request-scope or policy updates. The
+internal constructor accepts an integer timeout of `1..300` seconds, default
+`30`; the operator environment setting remains unwired. Repeated publication,
+further rotations and remove/readd/remove never extend the first deadline.
+Exact request completion removes its deadline; exact terminal connection
+release removes all corresponding deadlines. Deactivation preserves existing
+deadlines and returns all transports for shutdown without starting a new grace
+period.
+
+`expired_connections` returns bounded, serial-ordered pages of exact live
+connection tokens whose connection deadline or at least one unfinished retired
+request deadline has expired. Multiple expired requests yield one target. A
+completed old request no longer causes expiry on a still-covered connection;
+newer requests alone do not retire that connection. Pages are observations,
+not closure commands: completion or release may invalidate a returned target,
+and each new scan must restart at zero because lower serials can expire later.
+Expiry neither releases bookkeeping nor cancels work, revokes external
+Snapshots, fences new requests on still-covered connections, or proves ACK
+readiness. A future transport owner must inspect promptly and close expired
+targets, potentially interrupting newer requests sharing the same transport.
+There is still no live timer, transport closure or HTTP/2 GOAWAY owner, or
+public mutation ACK integration.
+
+An unused internal `RevisionPublisher` now exclusively owns a fresh Receiver
+and TLS Registry for one generation. Prepare validates the bounded immutable
+bytes and compiles their credential-free selector view outside both state locks,
+then stages both under the existing Registry -> Receiver lock order. Concurrent
+abort, close or another receiver transition invalidates delayed preparation;
+exact active/pending retries preserve newer prepared work. The Receiver's
+lifetime abort budget and historical exact-abort retries remain unchanged.
+
+Commit rechecks the exact prepared revision while holding both locks. It plans
+coverage changes, permanent request fences and retirement deadlines against the
+connections and requests present at commit, including those admitted after
+prepare. All fallible planning completes before either active view changes;
+failed planning preserves active state and the candidate for retry. Both views
+and all retirement bookkeeping are then published before either lock is released.
+Connection/request admissions therefore observe the old or new coherent state,
+without the standalone publication mismatch window. Credential-only rotation
+keeps old request bytes and deadlines while later requests pin the new snapshot.
+Exact active commit retries return no newly uncovered transports, do not extend
+deadlines, and do not discard a newer prepared candidate.
+
+The owner's close fences both components together, clears prepared state, and
+retains memberships, pinned handles and existing deadlines for terminal cleanup.
+Independent Receiver mutations and Registry activation/deactivation are rejected
+for this owned pair; standalone instances keep their existing APIs. Readback
+remains metadata-only, and commit returns newly uncovered connection tokens for
+a future drain owner, not a public mutation ACK. `RevisionPublisher` is not a
+Receiver and is deliberately not accepted by the current exact-type IPC server.
+No IPC wiring, system-addon hook, live timer, transport closure, HTTP/2 GOAWAY,
+public configuration or selective TLS activation is added by this foundation.
 
 1. **Decision telemetry and red tests**
    - Add fail-closed tests that distinguish authoritative empty from lookup

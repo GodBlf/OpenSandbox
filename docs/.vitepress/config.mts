@@ -217,6 +217,10 @@ export default defineConfig({
             { text: "Multi-Tenancy", link: "/guides/multi-tenancy" },
             { text: "Isolation Sessions", link: "/guides/isolation-sessions" },
             { text: "Pause & Resume", link: "/guides/pause-resume" },
+            {
+              text: "Kubernetes Resume Benchmark",
+              link: "/guides/kubernetes-resume-benchmark",
+            },
             { text: "Pod Provision Failure Recovery", link: "/guides/pod-recovery" },
             {
               text: "QEMU VMState Snapshots",
@@ -258,6 +262,7 @@ export default defineConfig({
             { text: "Claude Code", link: "/examples/claude-code" },
             { text: "Gemini CLI", link: "/examples/gemini-cli" },
             { text: "Codex CLI", link: "/examples/codex-cli" },
+            { text: "Apply Model Patches", link: "/examples/apply-patch" },
             { text: "OpenCode", link: "/examples/opencode" },
             { text: "Qwen Code", link: "/examples/qwen-code" },
             { text: "Kimi CLI", link: "/examples/kimi-cli" },
