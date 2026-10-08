@@ -97,6 +97,29 @@ test("invalid identities fail before sending requests", () => {
   assert.equal(requests.length, 0);
 });
 
+for (const responseBody of ['{"/file":', '<html>Bad gateway</html>']) {
+  test("detailed replace reports malformed successful responses: " + responseBody, async () => {
+    const requests = [];
+    const scoped = makeAdapter(requests, 200, responseBody).withIdentity(1001, 2000);
+    await assert.rejects(
+      scoped.replaceContentsDetailed([{ path: "/file", oldContent: "a", newContent: "b" }]),
+      error => !(error instanceof SyntaxError) &&
+        error.message.startsWith("Replace contents failed: unexpected response shape (")
+    );
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].path, PREFIX + "/v1/filesystem/1001/2000/files/replace");
+  });
+}
+
+test("detailed replace preserves replacement counts", async () => {
+  const requests = [];
+  const scoped = makeAdapter(requests, 200, '{"/file":{"replacedCount":2}}').withIdentity(1001, 2000);
+  assert.deepEqual(
+    await scoped.replaceContentsDetailed([{ path: "/file", oldContent: "a", newContent: "b" }]),
+    [{ path: "/file", replacedCount: 2 }]
+  );
+});
+
 test("custom adapters without identity support fail explicitly", () => {
   assert.throws(() => Sandbox.prototype.filesWithIdentity.call({ files: {} }, 1, 1), /does not support/);
 });

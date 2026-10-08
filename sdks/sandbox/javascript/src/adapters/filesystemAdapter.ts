@@ -226,10 +226,11 @@ export class FilesystemAdapter implements SandboxFiles {
   private static readonly identityInfoPath: keyof ExecdPaths =
     "/v1/filesystem/{uid}/{gid}/files/info";
   private static identityPath(uid: number, gid: number): string {
-    return FilesystemAdapter.identityInfoPath
+    const route = FilesystemAdapter.identityInfoPath;
+    // Keep only the identity prefix, independent of the operation suffix.
+    return route.slice(0, route.indexOf("{gid}") + "{gid}".length)
       .replace("{uid}", String(uid))
-      .replace("{gid}", String(gid))
-      .replace("/files/info", "");
+      .replace("{gid}", String(gid));
   }
   private readonly fetch: typeof fetch;
 
@@ -432,9 +433,16 @@ export class FilesystemAdapter implements SandboxFiles {
     });
     throwOnOpenApiFetchError({ error, response }, "Replace contents failed");
 
-    const ok = data?.trim()
-      ? JSON.parse(data) as typeof FilesystemAdapter.Api.ReplaceContentsOk
-      : undefined;
+    let ok: typeof FilesystemAdapter.Api.ReplaceContentsOk | undefined;
+    if (data?.trim()) {
+      try {
+        ok = JSON.parse(data) as typeof FilesystemAdapter.Api.ReplaceContentsOk;
+      } catch (e) {
+        throw new Error(
+          `Replace contents failed: unexpected response shape (${e instanceof Error ? e.message : String(e)})`
+        );
+      }
+    }
     if (!ok) return [];
     return Object.entries(ok).map(([path, result]) => ({
       path,
