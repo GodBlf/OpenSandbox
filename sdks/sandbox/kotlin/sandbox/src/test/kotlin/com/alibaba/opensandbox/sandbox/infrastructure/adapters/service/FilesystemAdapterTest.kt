@@ -21,6 +21,7 @@ import com.alibaba.opensandbox.sandbox.config.ConnectionConfig
 import com.alibaba.opensandbox.sandbox.domain.exceptions.SandboxApiException
 import com.alibaba.opensandbox.sandbox.domain.exceptions.SandboxError
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxEndpoint
+import com.alibaba.opensandbox.sandbox.domain.services.IdentityFilesystem
 import com.alibaba.opensandbox.sandbox.infrastructure.adapters.converter.isFileNotFound
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -104,6 +105,34 @@ class FilesystemAdapterTest {
     fun tearDown() {
         mockWebServer.shutdown()
         httpClientProvider.close()
+    }
+
+    @Test
+    fun identityClientNormalizesScopedEndpointSuffixes() {
+        for (suffix in listOf("", "/", "/v1/filesystem", "/v1/filesystem/", "/v1/filesystem/1/2")) {
+            val endpoint =
+                SandboxEndpoint(
+                    mockWebServer.hostName + ":" + mockWebServer.port + "/proxy-prefix" + suffix,
+                )
+            val original = FilesystemAdapter(httpClientProvider, endpoint)
+            val scoped = original.withIdentity(1, 2) as IdentityFilesystem
+            val rebound = scoped.withIdentity(0, IdentityFilesystem.MAX_IDENTITY_ID)
+            mockWebServer.enqueue(MockResponse().setBody("rebound"))
+            assertEquals("rebound", rebound.readFile("/file", "UTF-8", null))
+            assertEquals(
+                "/proxy-prefix/v1/filesystem/0/4294967294/files/download",
+                mockWebServer.takeRequest().requestUrl?.encodedPath,
+            )
+        }
+    }
+
+    @Test
+    fun identityClientValidatesBothIdsBeforeTransport() {
+        for (invalid in listOf(-1L, IdentityFilesystem.MAX_IDENTITY_ID + 1, Long.MAX_VALUE)) {
+            assertThrows<IllegalArgumentException> { filesystemAdapter.withIdentity(invalid, 0) }
+            assertThrows<IllegalArgumentException> { filesystemAdapter.withIdentity(0, invalid) }
+        }
+        assertEquals(0, mockWebServer.requestCount)
     }
 
     @Test
