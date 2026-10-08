@@ -13,6 +13,8 @@
 # limitations under the License.
 
 import asyncio
+import runpy
+from pathlib import Path
 
 import httpx
 import pytest
@@ -22,7 +24,7 @@ from opensandbox.adapters.filesystem_identity import filesystem_identity_path
 from opensandbox.config import ConnectionConfig
 from opensandbox.config.connection_sync import ConnectionConfigSync
 from opensandbox.exceptions import InvalidArgumentException, SandboxApiException
-from opensandbox.models.filesystem import WriteEntry
+from opensandbox.models.filesystem import ContentReplaceEntry, WriteEntry
 from opensandbox.models.sandboxes import SandboxEndpoint
 from opensandbox.sandbox import Sandbox
 from opensandbox.sync.adapters.filesystem_adapter import FilesystemAdapterSync
@@ -164,3 +166,78 @@ def test_invalid_identity_rejected_before_network_access(value):
 
 def test_identity_bounds():
     assert filesystem_identity_path(0, 4294967294) == "/v1/filesystem/0/4294967294"
+
+
+def test_execd_generation_preserves_empty_response_fix_and_excludes_duplicate_routes(tmp_path):
+    script = Path(__file__).resolve().parents[1] / "scripts/generate_api.py"
+    post_process = runpy.run_path(str(script))["post_process_execd_filesystem"]
+    duplicate_routes = tmp_path / "api/filesystem_identity"
+    duplicate_routes.mkdir(parents=True)
+    (duplicate_routes / "identity_replace_content.py").write_text("unused", encoding="utf-8")
+    operation = tmp_path / "api/filesystem/replace_content.py"
+    operation.parent.mkdir(parents=True)
+    operation.write_text(
+        "def parse(response):\n    if response.status_code == 200:\n        return response.json()\n",
+        encoding="utf-8",
+    )
+    post_process(tmp_path)
+    first_pass = operation.read_text(encoding="utf-8")
+    assert "if not response.content:\n            return None" in first_pass
+    assert not duplicate_routes.exists()
+    post_process(tmp_path)
+    assert operation.read_text(encoding="utf-8") == first_pass
+
+
+@pytest.mark.parametrize("scoped", [False, True])
+@pytest.mark.parametrize("body", [b"", b'{"/file":{"replacedCount":2}}'])
+@pytest.mark.asyncio
+async def test_async_replace_handles_legacy_empty_body(scoped, body):
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        return httpx.Response(200, content=body)
+
+    original = FilesystemAdapter(
+        ConnectionConfig(protocol="http", transport=httpx.MockTransport(handle)), endpoint()
+    )
+    adapter = original.with_identity(1001, 2000) if scoped else original
+    entries = [ContentReplaceEntry(path="/file", old_content="a", new_content="b")]
+    try:
+        await adapter.replace_contents(entries)
+        results = await adapter.replace_contents_detailed(entries)
+        assert [(r.path, r.replaced_count) for r in results] == ([('/file', 2)] if body else [])
+        expected = PREFIX + ("/v1/filesystem/1001/2000" if scoped else "") + "/files/replace"
+        assert [r.url.path for r in requests] == [expected, expected]
+        assert requests[1].url.params["verbose"] == "true"
+    finally:
+        await adapter._httpx_client.aclose()
+        if scoped:
+            await original._httpx_client.aclose()
+
+
+@pytest.mark.parametrize("scoped", [False, True])
+@pytest.mark.parametrize("body", [b"", b'{"/file":{"replacedCount":2}}'])
+def test_sync_replace_handles_legacy_empty_body(scoped, body):
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        return httpx.Response(200, content=body)
+
+    original = FilesystemAdapterSync(
+        ConnectionConfigSync(protocol="http", transport=httpx.MockTransport(handle)), endpoint()
+    )
+    adapter = original.with_identity(1001, 2000) if scoped else original
+    entries = [ContentReplaceEntry(path="/file", old_content="a", new_content="b")]
+    try:
+        adapter.replace_contents(entries)
+        results = adapter.replace_contents_detailed(entries)
+        assert [(r.path, r.replaced_count) for r in results] == ([('/file', 2)] if body else [])
+        expected = PREFIX + ("/v1/filesystem/1001/2000" if scoped else "") + "/files/replace"
+        assert [r.url.path for r in requests] == [expected, expected]
+        assert requests[1].url.params["verbose"] == "true"
+    finally:
+        adapter._httpx_client.close()
+        if scoped:
+            original._httpx_client.close()
