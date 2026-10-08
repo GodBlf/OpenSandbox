@@ -30,10 +30,11 @@ WORKDIR /src
 RUN git clone --depth 1 https://github.com/openai/codex.git . \
     && git fetch --depth 1 origin ${CODEX_REF} \
     && git checkout ${CODEX_REF}
+WORKDIR /src/codex-rs
 RUN cargo build --release --locked -p codex-apply-patch
 
 FROM opensandbox/execd:v1.1.0
-COPY --from=apply-patch-builder /src/target/release/apply_patch /usr/local/bin/apply_patch
+COPY --from=apply-patch-builder /src/codex-rs/target/release/apply_patch /usr/local/bin/apply_patch
 RUN chmod 0755 /usr/local/bin/apply_patch
 ```
 
@@ -55,7 +56,12 @@ the existing command API. The executable accepts either one patch argument or
 the patch on standard input; using a file avoids shell quoting and argument
 length problems.
 
+Run the following snippet inside an async function. It assumes
+`/workspace/hello.py` already exists and contains `print("hello")`.
+
 ```python
+import sys
+
 from opensandbox import Sandbox
 
 patch = """*** Begin Patch
@@ -66,13 +72,17 @@ patch = """*** Begin Patch
 *** End Patch
 """
 
-async with Sandbox.create(image="my-registry/opensandbox-execd-with-patch:1") as sandbox:
+async with (await Sandbox.create(image="my-registry/opensandbox-execd-with-patch:1")) as sandbox:
     await sandbox.files.write_file("/tmp/change.patch", patch)
     result = await sandbox.commands.run(
         "cd /workspace && apply_patch < /tmp/change.patch"
     )
-    stdout = result.logs.stdout[0].text if result.logs.stdout else ""
-    print(stdout)
+    stdout = "".join(message.text for message in result.logs.stdout)
+    stderr = "".join(message.text for message in result.logs.stderr)
+    print(stdout, end="")
+    print(stderr, end="", file=sys.stderr)
+    if result.exit_code != 0:
+        raise RuntimeError(f"apply_patch failed (exit code: {result.exit_code})")
 ```
 
 Patch paths are resolved relative to the command working directory unless the
@@ -91,5 +101,5 @@ model.
 - For agents that already manage their own editing tools, continue using the
   regular file and command APIs instead of installing this executable.
 
-See the [execd command API](/api/) and the
+See the [OpenAPI specifications](/api/) and the
 [Codex CLI example](/examples/codex-cli) for the surrounding sandbox setup.
