@@ -50,6 +50,31 @@ public class FilesystemAdapterTests
     }
 
     [Theory]
+    [InlineData("http://localhost:8080/v1/filesystem/")]
+    [InlineData("http://localhost:8080/proxy/v1/filesystem/tenant/port/44772")]
+    [InlineData("http://localhost:8080/proxy/V1/FILESYSTEM/tenant/port/44772/")]
+    public async Task WithIdentity_ShouldPreserveProxyRootWhenRescoped(string baseUrl)
+    {
+        var handler = new IdentityCaptureHandler();
+        using var client = new HttpClient(handler);
+        var wrapper = new HttpClientWrapper(client, baseUrl);
+        var original = new FilesystemAdapter(wrapper, client, baseUrl, new Dictionary<string, string>());
+        OpenSandbox.Services.IIdentitySandboxFiles capability = original;
+        var first = capability.WithIdentity(1, 2);
+        var second = ((OpenSandbox.Services.IIdentitySandboxFiles)first).WithIdentity(3, 4);
+
+        await first.GetFileInfoAsync(new[] { "/first" });
+        await second.GetFileInfoAsync(new[] { "/second" });
+        await original.GetFileInfoAsync(new[] { "/original" });
+
+        var root = new Uri(baseUrl.TrimEnd('/')).AbsolutePath.TrimEnd('/');
+        handler.Paths.Should().Equal(
+            root + "/v1/filesystem/1/2/files/info",
+            root + "/v1/filesystem/3/4/files/info",
+            root + "/files/info");
+    }
+
+    [Theory]
     [InlineData(HttpStatusCode.NotFound)]
     [InlineData(HttpStatusCode.NotImplemented)]
     [InlineData(HttpStatusCode.ServiceUnavailable)]
