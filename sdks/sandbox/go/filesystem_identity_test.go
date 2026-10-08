@@ -121,3 +121,40 @@ func TestFilesWithIdentityValidation(t *testing.T) {
 		t.Fatal("accepted uninitialized client")
 	}
 }
+
+func TestIdentityCloneInitializesIndependentStreamingClient(t *testing.T) {
+	client := NewExecdClient("http://localhost:44772", "secret")
+	originalStream := client.client.streamHTTPClient()
+	files, err := client.FilesWithIdentity(1, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone := files.(*ExecdClient).client
+	if clone.streamClient != nil {
+		t.Fatal("clone inherited initialized streaming state")
+	}
+	if stream := clone.streamHTTPClient(); stream == nil || stream == originalStream {
+		t.Fatal("clone did not initialize its own streaming client")
+	}
+}
+
+func TestIdentityCloneConcurrentWithStreamingInitialization(t *testing.T) {
+	for i := 0; i < 100; i++ {
+		client := NewExecdClient("http://localhost:44772", "secret")
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); client.client.streamHTTPClient() }()
+		go func() {
+			defer wg.Done()
+			files, err := client.FilesWithIdentity(1, 2)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			if files.(*ExecdClient).client.streamHTTPClient() == nil {
+				t.Error("clone has a nil streaming client")
+			}
+		}()
+		wg.Wait()
+	}
+}
