@@ -439,24 +439,29 @@ export class FilesystemAdapter implements SandboxFiles {
     });
     throwOnOpenApiFetchError({ error, response }, "Replace contents failed");
 
+    const text = data?.trim() ?? "";
+    if (!text) return [];
+
     let ok: typeof FilesystemAdapter.Api.ReplaceContentsOk | undefined;
-    if (data?.trim()) {
-      try {
-        ok = JSON.parse(data) as typeof FilesystemAdapter.Api.ReplaceContentsOk;
-      } catch (e) {
-        throw new Error(
-          `Replace contents failed: unexpected response shape (${e instanceof Error ? e.message : String(e)})`
-        );
-      }
+    try {
+      ok = JSON.parse(text) as typeof FilesystemAdapter.Api.ReplaceContentsOk;
+    } catch (e) {
+      throw new Error(
+        `Replace contents failed: unexpected response shape (${e instanceof Error ? e.message : String(e)})`
+      );
     }
-    if (!data?.trim()) return [];
     if (typeof ok !== "object" || ok === null || Array.isArray(ok)) {
       throw new Error("Replace contents failed: unexpected response shape (expected object)");
     }
-    return Object.entries(ok).map(([path, result]) => ({
-      path,
-      replacedCount: result.replacedCount,
-    }));
+    return Object.entries(ok).map(([path, result]) => {
+      const replacedCount = (result as { replacedCount?: unknown } | null)?.replacedCount;
+      if (typeof replacedCount !== "number") {
+        throw new Error(
+          `Replace contents failed: unexpected response shape (invalid entry for ${path})`
+        );
+      }
+      return { path, replacedCount };
+    });
   }
 
   async search(entry: SearchEntry): Promise<SearchFilesResponse> {

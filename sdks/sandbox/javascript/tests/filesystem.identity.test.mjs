@@ -20,7 +20,7 @@ import { FilesystemAdapter, createExecdClient } from "../dist/internal.js";
 const BASE_URL = "http://localhost:44772/sandboxes/example/port/44772";
 const PREFIX = "/sandboxes/example/port/44772";
 
-function makeAdapter(requests, status = 200, responseBody = "{}") {
+function makeAdapter(requests, status = 200, responseBody = "{}", errorBody = "unsupported") {
   const opts = {
     baseUrl: BASE_URL,
     headers: { "X-EXECD-ACCESS-TOKEN": "secret", "X-Routing": "sandbox" },
@@ -31,7 +31,7 @@ function makeAdapter(requests, status = 200, responseBody = "{}") {
         headers: request.headers,
         body: await request.arrayBuffer(),
       });
-      return new Response(status === 200 ? responseBody : "unsupported", {
+      return new Response(status === 200 ? responseBody : errorBody, {
         status,
         headers: { "content-type": "application/json" },
       });
@@ -78,6 +78,40 @@ for (const status of [404, 501, 503]) {
     }
   });
 }
+
+for (const status of [404, 501, 503]) {
+  test("identity requests reject empty-bodied failures after HTTP " + status, async () => {
+    for (const operation of [
+      files => files.replaceContents([{ path: "/file", oldContent: "a", newContent: "b" }]),
+      files => files.replaceContentsDetailed([{ path: "/file", oldContent: "a", newContent: "b" }]),
+    ]) {
+      const requests = [];
+      const scoped = makeAdapter(requests, status, "{}", "").withIdentity(1001, 2000);
+      await assert.rejects(
+        operation(scoped),
+        error => error.name === "SandboxApiException" &&
+          error.statusCode === status &&
+          error.error.code === "UNEXPECTED_RESPONSE"
+      );
+      assert.equal(requests.length, 1);
+      assert.equal(requests[0].path, PREFIX + "/v1/filesystem/1001/2000/files/replace");
+    }
+  });
+}
+
+test("replace failures keep structured error payloads from JSON bodies", async () => {
+  const requests = [];
+  const scoped = makeAdapter(requests, 400, "{}", '{"code":"INVALID_REQUEST_BODY","message":"bad request"}')
+    .withIdentity(1001, 2000);
+  await assert.rejects(
+    scoped.replaceContents([{ path: "/file", oldContent: "a", newContent: "b" }]),
+    error => error.name === "SandboxApiException" &&
+      error.statusCode === 400 &&
+      error.error.code === "INVALID_REQUEST_BODY" &&
+      error.message === "bad request"
+  );
+  assert.equal(requests.length, 1);
+});
 
 test("replace contents accepts an empty successful response", async () => {
   const requests = [];
@@ -127,6 +161,18 @@ for (const responseBody of ['5', '0', 'true', 'false', 'null', '"value"', '[]', 
     await assert.rejects(
       scoped.replaceContentsDetailed([{ path: "/file", oldContent: "a", newContent: "b" }]),
       /Replace contents failed: unexpected response shape \(expected object\)/
+    );
+    assert.equal(requests.length, 1);
+  });
+}
+
+for (const responseBody of ['{"/file":{"count":2}}', '{"/file":5}', '{"/file":null}', '{"/file":{"replacedCount":"2"}}']) {
+  test("detailed replace rejects entries without a numeric replacedCount: " + responseBody, async () => {
+    const requests = [];
+    const scoped = makeAdapter(requests, 200, responseBody).withIdentity(1001, 2000);
+    await assert.rejects(
+      scoped.replaceContentsDetailed([{ path: "/file", oldContent: "a", newContent: "b" }]),
+      /Replace contents failed: unexpected response shape \(invalid entry for \/file\)/
     );
     assert.equal(requests.length, 1);
   });
