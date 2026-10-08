@@ -29,6 +29,7 @@ from opensandbox_server.services.snapshot_models import (
 )
 from opensandbox_server.services import snapshot_service as snapshot_service_module
 from opensandbox_server.services.snapshot_runtime import (
+    SNAPSHOT_CREATE_CONFLICT_REASON,
     NoopSnapshotRuntime,
     SnapshotRuntimeStatus,
     SnapshotRuntimeUnsupportedError,
@@ -485,6 +486,44 @@ def test_synchronous_create_failure_returns_error_without_persisting(tmp_path) -
 
     assert exc_info.value.status_code == 500
     assert exc_info.value.detail["code"] == "SNAPSHOT::RUNTIME_CREATE_FAILED"
+    assert service.list_snapshots(ListSnapshotsRequest()).pagination.total_items == 0
+    assert runtime.delete_calls == []
+    assert executor.submitted == []
+
+
+def test_synchronous_create_conflict_returns_409_without_persisting(tmp_path) -> None:
+    """A re-entry fence rejection (e.g. fsb FAILED_PRECONDITION) is a 409, not 500."""
+    repo = SQLiteSnapshotRepository(tmp_path / "snapshots.db")
+    runtime = SynchronousStubSnapshotRuntime()
+    executor = CapturingExecutor()
+    service = PersistedSnapshotService(
+        repo,
+        StubSandboxService(),
+        snapshot_runtime=runtime,
+        snapshot_executor=executor,
+        recover_unfinished_snapshots=False,
+    )
+
+    def create_snapshot(snapshot_id: str, sandbox_id: str, **kwargs):
+        runtime.calls.append((snapshot_id, sandbox_id))
+        return SnapshotRuntimeStatus(
+            state=SnapshotState.FAILED,
+            reason=SNAPSHOT_CREATE_CONFLICT_REASON,
+            message=(
+                "Failed to create fsb snapshot osb-snap-2: "
+                'FastPathError(code=FAILED_PRECONDITION, message=Sandbox already '
+                'has snapshot "osb-snap-1")'
+            ),
+        )
+
+    runtime.create_snapshot = create_snapshot
+
+    with pytest.raises(HTTPException) as exc_info:
+        service.create_snapshot("sbx-001", CreateSnapshotRequest(name="sync-conflict"))
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["code"] == "SNAPSHOT::RUNTIME_CREATE_CONFLICT"
+    assert "already has snapshot" in exc_info.value.detail["message"]
     assert service.list_snapshots(ListSnapshotsRequest()).pagination.total_items == 0
     assert runtime.delete_calls == []
     assert executor.submitted == []

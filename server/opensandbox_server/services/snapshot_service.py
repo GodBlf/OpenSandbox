@@ -51,6 +51,7 @@ from opensandbox_server.config import get_config
 from opensandbox_server.repositories.snapshots.factory import get_snapshot_repository
 from opensandbox_server.services.constants import SnapshotErrorCodes
 from opensandbox_server.services.snapshot_runtime import (
+    SNAPSHOT_CREATE_CONFLICT_REASON,
     NoopSnapshotRuntime,
     SnapshotRuntime,
     SnapshotRuntimePreflightError,
@@ -226,6 +227,16 @@ class PersistedSnapshotService(SnapshotService):
                 if runtime_status is not None
                 else "Snapshot runtime did not accept the creation."
             )
+            if reason == SNAPSHOT_CREATE_CONFLICT_REASON:
+                # Re-entry fence: the source sandbox is already held by
+                # another snapshot's dump window. Nothing was persisted.
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "code": SnapshotErrorCodes.RUNTIME_CREATE_CONFLICT,
+                        "message": message,
+                    },
+                )
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail={

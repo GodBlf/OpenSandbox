@@ -39,6 +39,12 @@ class SnapshotRuntimeStatus:
     backend: Optional[str] = None
 
 
+# Reason on a FAILED SnapshotRuntimeStatus when the runtime refused the create
+# because the source sandbox is already held by another snapshot (re-entry
+# fence). Surfaced as 409 instead of 500 by the synchronous create path.
+SNAPSHOT_CREATE_CONFLICT_REASON = "snapshot_runtime_create_conflict"
+
+
 class SnapshotRuntimePreflightError(RuntimeError):
     """Snapshot creation cannot safely start for the current source runtime."""
 
@@ -178,6 +184,7 @@ class NoopSnapshotRuntime:
 
 
 __all__ = [
+    "SNAPSHOT_CREATE_CONFLICT_REASON",
     "SnapshotRuntime",
     "SnapshotRuntimePreflightError",
     "SnapshotRuntimeStatus",
