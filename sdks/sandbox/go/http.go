@@ -58,15 +58,22 @@ type Client struct {
 }
 
 func (c *Client) cloneWithBaseURL(baseURL string) *Client {
-	cloned := *c
-	cloned.baseURL = baseURL
+	// Streaming state contains sync.Once and must never be copied from a live client.
+	cloned := &Client{
+		baseURL:    baseURL,
+		apiKey:     c.apiKey,
+		authHeader: c.authHeader,
+		httpClient: c.httpClient,
+		timeout:    c.timeout,
+		retry:      c.retry,
+	}
 	if c.headers != nil {
 		cloned.headers = make(map[string]string, len(c.headers))
 		for k, v := range c.headers {
 			cloned.headers[k] = v
 		}
 	}
-	return &cloned
+	return cloned
 }
 
 // streamHTTPClient returns a dedicated HTTP client for SSE streaming.
