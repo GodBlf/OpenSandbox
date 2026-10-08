@@ -223,12 +223,18 @@ function toPermission(e: {
  * - Implements streaming upload/download helpers
  */
 export class FilesystemAdapter implements SandboxFiles {
-  private static readonly identityInfoPath: keyof ExecdPaths =
-    "/v1/filesystem/{uid}/{gid}/files/info";
+  private static readonly MAX_IDENTITY_ID = 4294967294;
+  // Assert that every generated identity route starts with this prefix.
+  private static readonly identityBasePath:
+    Extract<keyof ExecdPaths, `/v1/filesystem/${string}`> extends never
+      ? never
+      : Exclude<
+          Extract<keyof ExecdPaths, `/v1/filesystem/${string}`>,
+          `/v1/filesystem/{uid}/{gid}/${string}`
+        > extends never ? "/v1/filesystem/{uid}/{gid}" : never =
+    "/v1/filesystem/{uid}/{gid}";
   private static identityPath(uid: number, gid: number): string {
-    const route = FilesystemAdapter.identityInfoPath;
-    // Keep only the identity prefix, independent of the operation suffix.
-    return route.slice(0, route.indexOf("{gid}") + "{gid}".length)
+    return FilesystemAdapter.identityBasePath
       .replace("{uid}", String(uid))
       .replace("{gid}", String(gid));
   }
@@ -264,8 +270,8 @@ export class FilesystemAdapter implements SandboxFiles {
 
   withIdentity(uid: number, gid: number): SandboxFiles {
     for (const [name, value] of [["uid", uid], ["gid", gid]] as const) {
-      if (!Number.isInteger(value) || value < 0 || value > 4294967294) {
-        throw new RangeError(name + " must be an integer between 0 and 4294967294");
+      if (!Number.isInteger(value) || value < 0 || value > FilesystemAdapter.MAX_IDENTITY_ID) {
+        throw new RangeError(name + " must be an integer between 0 and " + FilesystemAdapter.MAX_IDENTITY_ID);
       }
     }
     const opts = {
@@ -443,7 +449,10 @@ export class FilesystemAdapter implements SandboxFiles {
         );
       }
     }
-    if (!ok) return [];
+    if (!data?.trim()) return [];
+    if (typeof ok !== "object" || ok === null || Array.isArray(ok)) {
+      throw new Error("Replace contents failed: unexpected response shape (expected object)");
+    }
     return Object.entries(ok).map(([path, result]) => ({
       path,
       replacedCount: result.replacedCount,

@@ -120,6 +120,29 @@ test("detailed replace preserves replacement counts", async () => {
   );
 });
 
+for (const responseBody of ['5', '0', 'true', 'false', 'null', '"value"', '[]', '[{"replacedCount":2}]']) {
+  test("detailed replace rejects non-object responses: " + responseBody, async () => {
+    const requests = [];
+    const scoped = makeAdapter(requests, 200, responseBody).withIdentity(1001, 2000);
+    await assert.rejects(
+      scoped.replaceContentsDetailed([{ path: "/file", oldContent: "a", newContent: "b" }]),
+      /Replace contents failed: unexpected response shape \(expected object\)/
+    );
+    assert.equal(requests.length, 1);
+  });
+}
+
+test("identity boundary values are accepted and validation reports the bound", async () => {
+  const requests = [];
+  const original = makeAdapter(requests);
+  await original.withIdentity(0, 4294967294).getFileInfo(["/file"]);
+  await original.withIdentity(4294967294, 0).getFileInfo(["/file"]);
+  assert.equal(requests[0].path, PREFIX + "/v1/filesystem/0/4294967294/files/info");
+  assert.equal(requests[1].path, PREFIX + "/v1/filesystem/4294967294/0/files/info");
+  assert.throws(() => original.withIdentity(4294967295, 0), /uid must be an integer between 0 and 4294967294/);
+  assert.throws(() => original.withIdentity(0, 4294967295), /gid must be an integer between 0 and 4294967294/);
+});
+
 test("custom adapters without identity support fail explicitly", () => {
   assert.throws(() => Sandbox.prototype.filesWithIdentity.call({ files: {} }, 1, 1), /does not support/);
 });
