@@ -461,13 +461,10 @@ export class Sandbox {
    * Requires identity-aware Execd; unsupported servers never trigger fallback.
    */
   filesWithIdentity(uid: number, gid: number): SandboxFiles {
-    const adapter = this.files as SandboxFiles & {
-      withIdentity?: (uid: number, gid: number) => SandboxFiles;
-    };
-    if (typeof adapter.withIdentity !== "function") {
+    if (typeof this.files.withIdentity !== "function") {
       throw new Error("The selected filesystem adapter does not support execution identity");
     }
-    return adapter.withIdentity(uid, gid);
+    return this.files.withIdentity(uid, gid);
   }
 
   private constructor(opts: {
