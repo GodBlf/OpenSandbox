@@ -70,7 +70,11 @@ internal class FilesystemAdapter(
     }
 
     private val logger = LoggerFactory.getLogger(FilesystemAdapter::class.java)
-    private val unscopedEndpoint = execdEndpoint.endpoint.substringBefore("/v1/filesystem/")
+    private val unscopedEndpoint =
+        execdEndpoint.endpoint
+            .substringBefore("/v1/filesystem/")
+            .trimEnd('/')
+            .removeSuffix("/v1/filesystem")
     private val api =
         FilesystemApi(
             "${httpClientProvider.config.protocol}://${execdEndpoint.endpoint}",
@@ -85,12 +89,16 @@ internal class FilesystemAdapter(
                 .build(),
         )
 
-    fun withIdentity(
+    override fun withIdentity(
         uid: Long,
         gid: Long,
     ): Filesystem {
-        require(uid in 0..4294967294L) { "uid must be between 0 and 4294967294" }
-        require(gid in 0..4294967294L) { "gid must be between 0 and 4294967294" }
+        require(uid in 0..IdentityFilesystem.MAX_IDENTITY_ID) {
+            "uid must be between 0 and ${IdentityFilesystem.MAX_IDENTITY_ID}"
+        }
+        require(gid in 0..IdentityFilesystem.MAX_IDENTITY_ID) {
+            "gid must be between 0 and ${IdentityFilesystem.MAX_IDENTITY_ID}"
+        }
         return FilesystemAdapter(
             httpClientProvider,
             SandboxEndpoint(
