@@ -44,6 +44,7 @@ import com.alibaba.opensandbox.sandbox.domain.services.Diagnostics
 import com.alibaba.opensandbox.sandbox.domain.services.Egress
 import com.alibaba.opensandbox.sandbox.domain.services.Filesystem
 import com.alibaba.opensandbox.sandbox.domain.services.Health
+import com.alibaba.opensandbox.sandbox.domain.services.IdentityFilesystem
 import com.alibaba.opensandbox.sandbox.domain.services.IsolationService
 import com.alibaba.opensandbox.sandbox.domain.services.Metrics
 import com.alibaba.opensandbox.sandbox.domain.services.Sandboxes
@@ -117,6 +118,25 @@ class Sandbox internal constructor(
      * @return Service for filesystem manipulation
      */
     fun files() = fileSystemService
+
+    /**
+     * Returns an independent filesystem client using explicit Linux credentials.
+     * Unsupported servers fail without falling back to the default identity.
+     *
+     * @throws UnsupportedOperationException if the configured filesystem does not support identity scoping
+     * @throws IllegalArgumentException if uid or gid is outside 0..4294967294
+     */
+    fun filesWithIdentity(
+        uid: Long,
+        gid: Long,
+    ): Filesystem {
+        val adapter =
+            fileSystemService as? IdentityFilesystem
+                ?: throw UnsupportedOperationException(
+                    "The selected filesystem adapter does not support execution identity",
+                )
+        return adapter.withIdentity(uid, gid)
+    }
 
     /**
      * Provides access to command execution operations.

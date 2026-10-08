@@ -2360,6 +2360,34 @@ class TestAttachPvcOwnerReferences:
 
 
 class TestListSandboxes:
+    def test_deleting_batchsandbox_status_in_list_and_get(self, k8s_service, mock_workload):
+        from opensandbox_server.api.schema import PaginationRequest, SandboxFilter
+        from opensandbox_server.services.k8s.batchsandbox_provider import BatchSandboxProvider
+
+        deletion_timestamp = datetime(2026, 10, 8, 10, tzinfo=timezone.utc)
+        mock_workload["metadata"]["deletionTimestamp"] = deletion_timestamp.isoformat()
+        mock_workload["status"] = {"phase": "Pending", "ready": 0}
+        provider = k8s_service.workload_provider
+        provider.list_workloads.return_value = [mock_workload]
+        provider.get_workload.return_value = mock_workload
+        provider.get_status.side_effect = BatchSandboxProvider(MagicMock()).get_status
+        provider.get_expiration.return_value = datetime.now(timezone.utc) + timedelta(hours=1)
+
+        request = ListSandboxesRequest(
+            filter=SandboxFilter(state=["Stopping"]), pagination=PaginationRequest(page=1, page_size=20)
+        )
+        response = k8s_service.list_sandboxes(request)
+        assert response.pagination.total_items == 1
+        assert len(response.items) == 1
+        sandbox = k8s_service.get_sandbox("test-sandbox-123")
+        for result in (response.items[0], sandbox):
+            assert result.status.state == "Stopping"
+            assert result.status.reason == "DELETING"
+            assert result.status.last_transition_at == deletion_timestamp
+
+        request.filter.state = ["Pending"]
+        assert not k8s_service.list_sandboxes(request).items
+
     
     def test_list_all_sandboxes_succeeds(self, k8s_service, mock_workload):
         k8s_service.workload_provider.list_workloads.return_value = [mock_workload]

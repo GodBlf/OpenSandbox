@@ -2772,6 +2772,31 @@ spec:
             "Cannot resume sandbox in state Running, expected Paused"
         )
 
+    @pytest.mark.parametrize("phase", ["", "Pending", "Succeed", "Running", "Failed", "Pausing", "Paused", "Resuming"])
+    @pytest.mark.parametrize("task_failed", [0, 1])
+    def test_get_status_deleting_overrides_runtime_status(self, phase, task_failed):
+        provider = BatchSandboxProvider(MagicMock())
+        deletion_timestamp = "2026-10-08T10:00:00Z"
+        workload = {
+            "metadata": {
+                "creationTimestamp": "2026-10-08T09:00:00Z",
+                "deletionTimestamp": deletion_timestamp,
+            },
+            "status": {
+                "phase": phase,
+                "ready": 1,
+                "taskFailed": task_failed,
+                "conditions": [{"type": "PoolAllocationPending", "status": "True"}],
+            },
+        }
+
+        assert provider.get_status(workload) == {
+            "state": "Stopping",
+            "reason": "DELETING",
+            "message": "Sandbox is being deleted",
+            "last_transition_at": deletion_timestamp,
+        }
+
     def test_get_status_succeed_phase_maps_to_running_state(self):
         provider = BatchSandboxProvider(MagicMock())
         workload = {
