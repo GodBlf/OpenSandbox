@@ -12,13 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
+from opensandbox_server.api.schema import ListSandboxesRequest, PaginationRequest, SandboxFilter
+from opensandbox_server.services.composite_service import CompositeSandboxService
 from opensandbox_server.services.image_identity import docker_image_digest, registry_image_digest
 from opensandbox_server.services.k8s.image_identity import workload_image_digest
+from opensandbox_server.services.k8s.kubernetes_service import KubernetesSandboxService
 from opensandbox_server.services.k8s.workload_mapper import _build_sandbox_from_workload
 
 
@@ -148,6 +152,104 @@ def _provider(pods):
         "last_transition_at": None,
     }
     return provider
+
+
+def _batch_workload():
+    workload = _workload()
+    workload["apiVersion"] = "sandbox.opensandbox.io/v1alpha1"
+    workload["kind"] = "BatchSandbox"
+    workload["metadata"]["name"] = "sbx"
+    workload["status"] = {"replicas": 1, "allocated": 1, "ready": 1}
+    return workload
+
+
+@pytest.mark.parametrize("stale_owner", [False, True])
+def test_batchsandbox_without_status_selector_uses_controller_label_and_owner(stale_owner):
+    pod = _pod()
+    pod["metadata"]["labels"] = {"batch-sandbox.sandbox.opensandbox.io/name": "sbx"}
+    if stale_owner:
+        pod["metadata"]["ownerReferences"][0]["uid"] = "old-workload-uid"
+    provider = _provider([pod])
+    assert workload_image_digest(_batch_workload(), provider) == (None if stale_owner else DIGEST)
+    provider.k8s_client.list_pods.assert_called_once_with(
+        namespace="tenant", label_selector="batch-sandbox.sandbox.opensandbox.io/name=sbx"
+    )
+
+
+@pytest.mark.parametrize("name", [None, "", "sbx,other=value", "a" * 64])
+def test_batchsandbox_invalid_label_value_does_not_query_pods(name):
+    workload = _batch_workload()
+    workload["metadata"]["name"] = name
+    provider = _provider([_pod()])
+    assert workload_image_digest(workload, provider) is None
+    provider.k8s_client.list_pods.assert_not_called()
+
+
+@pytest.mark.parametrize("composite", [False, True])
+@pytest.mark.parametrize("page", [1, 2, 4])
+@pytest.mark.parametrize("kind", ["BatchSandbox", "Sandbox"])
+def test_list_reads_pods_only_for_filtered_page(composite, page, kind):
+    provider = _provider([])
+    workloads = []
+    for index in range(61):
+        workload = _batch_workload()
+        workload["metadata"].update(
+            name=f"sbx-{index}",
+            uid=f"uid-{index}",
+            creationTimestamp=(
+                datetime(2026, 10, 9, tzinfo=timezone.utc) + timedelta(seconds=index)
+            ).isoformat(),
+            labels={
+                "opensandbox.io/id": f"sbx-{index}",
+                "team": "included" if index < 41 else "excluded",
+            },
+        )
+        if kind == "Sandbox":
+            workload["kind"] = kind
+            workload["status"] = {"selector": f"opensandbox.io/id=sbx-{index}"}
+        workloads.append(workload)
+    provider.list_workloads.return_value = workloads
+
+    def list_pods(*, namespace, label_selector):
+        assert namespace == "tenant"
+        index = int(label_selector.rsplit("-", 1)[1])
+        pod = _pod()
+        pod["metadata"]["ownerReferences"][0]["uid"] = f"uid-{index}"
+        return [pod]
+
+    provider.k8s_client.list_pods.side_effect = list_pods
+    service = KubernetesSandboxService.__new__(KubernetesSandboxService)
+    service.workload_provider = provider
+    service._resolve_namespace = MagicMock(return_value="tenant")
+    if composite:
+        fsb = MagicMock()
+        fsb_sandbox = _build_sandbox_from_workload(
+            workloads[-1], provider, resolve_image_digest=False
+        )
+        fsb.list_sandbox_objects.return_value = [
+            fsb_sandbox.model_copy(update={"id": "fsb-new", "metadata": {"team": "included"}})
+        ]
+        service = CompositeSandboxService(service, fsb)
+    request = ListSandboxesRequest(
+        filter=SandboxFilter(metadata={"team": "included"}),
+        pagination=PaginationRequest(page=page, page_size=20),
+    )
+    response = service.list_sandboxes(request)
+    assert response.pagination.total_items == (42 if composite else 41)
+    all_ids = (["fsb-new"] if composite else []) + [f"sbx-{index}" for index in range(40, -1, -1)]
+    expected_ids = all_ids[(page - 1) * 20:page * 20]
+    expected_pod_ids = [sandbox_id for sandbox_id in expected_ids if not sandbox_id.startswith("fsb-")]
+    assert [sandbox.id for sandbox in response.items] == expected_ids
+    for sandbox in response.items:
+        assert sandbox.resolved_image_digest == (None if sandbox.id.startswith("fsb-") else DIGEST)
+    assert provider.k8s_client.list_pods.call_count == len(expected_pod_ids)
+    selector_key = (
+        "batch-sandbox.sandbox.opensandbox.io/name" if kind == "BatchSandbox" else "opensandbox.io/id"
+    )
+    assert [call.kwargs["label_selector"] for call in provider.k8s_client.list_pods.call_args_list] == [
+        f"{selector_key}={sandbox_id}" for sandbox_id in expected_pod_ids
+    ]
+    provider.get_workload.assert_not_called()
 
 
 def test_kubernetes_reads_owned_primary_container_and_maps_lifecycle_info():

@@ -34,7 +34,9 @@ def _is_opensandbox_label(label_key: str) -> bool:
     return label_key.split("/", 1)[0] == "opensandbox.io"
 
 
-def _build_sandbox_from_workload(workload: Any, workload_provider: Any) -> Sandbox:
+def _build_sandbox_from_workload(
+    workload: Any, workload_provider: Any, *, resolve_image_digest: bool = True
+) -> Sandbox:
     if isinstance(workload, dict):
         metadata = workload.get("metadata", {})
         spec = workload.get("spec", {})
@@ -91,7 +93,9 @@ def _build_sandbox_from_workload(workload: Any, workload_provider: Any) -> Sandb
         metadata=user_metadata if user_metadata else None,
         extensions=extract_extensions_from_mapping(annotations),
         image=image_spec,
-        resolved_image_digest=workload_image_digest(workload, workload_provider),
+        resolved_image_digest=(
+            workload_image_digest(workload, workload_provider) if resolve_image_digest else None
+        ),
         snapshotId=snapshot_id,
         entrypoint=entrypoint,
         platform=platform_spec,

@@ -14,10 +14,16 @@
 
 """Read the primary container identity only from a current workload-owned Pod."""
 
+import re
 from typing import Any
 
 from opensandbox_server.services.constants import SANDBOX_SNAPSHOT_ID_LABEL
 from opensandbox_server.services.image_identity import registry_image_digest
+
+
+# Written by the BatchSandbox controller; its status has no selector field.
+_BATCH_SANDBOX_NAME_LABEL = "batch-sandbox.sandbox.opensandbox.io/name"
+_LABEL_VALUE = re.compile(r"[a-zA-Z0-9](?:[-a-zA-Z0-9_.]{0,61}[a-zA-Z0-9])?")
 
 
 def _field(value: Any, camel: str, snake: str | None = None) -> Any:
@@ -51,6 +57,11 @@ def workload_image_digest(workload: Any, provider: Any) -> str | None:
             namespace = _field(metadata, "namespace")
             uid = _field(metadata, "uid")
             selector = _field(_field(workload, "status"), "selector")
+            if _field(workload, "kind") == "BatchSandbox":
+                workload_name = _field(metadata, "name")
+                if not isinstance(workload_name, str) or not _LABEL_VALUE.fullmatch(workload_name):
+                    return None
+                selector = f"{_BATCH_SANDBOX_NAME_LABEL}={workload_name}"
             if not all(isinstance(value, str) and value for value in (namespace, uid, selector)):
                 return None
             pods = provider.k8s_client.list_pods(namespace=namespace, label_selector=selector)
