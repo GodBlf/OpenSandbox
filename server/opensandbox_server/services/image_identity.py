@@ -57,6 +57,25 @@ def docker_image_digest(container: Any) -> str | None:
             return None
         identities = {ref: registry_image_digest(ref) for ref in references if isinstance(ref, str)}
         identities = {ref: digest for ref, digest in identities.items() if digest is not None}
+        # Containerd-backed Docker also synthesizes RepoDigests for local builds.
+        # Require matching pull provenance when the daemon exposes it.
+        if "Identity" in attrs or "Descriptor" in attrs:
+            identity = attrs.get("Identity")
+            pulls = identity.get("Pull") if isinstance(identity, dict) else None
+            if not isinstance(pulls, list):
+                return None
+            repositories = {
+                _repository(pull["Repository"])
+                for pull in pulls
+                if isinstance(pull, dict)
+                and isinstance(pull.get("Repository"), str)
+                and pull["Repository"]
+            }
+            identities = {
+                ref: digest
+                for ref, digest in identities.items()
+                if _repository(ref) in repositories
+            }
         digests = set(identities.values())
         if len(digests) == 1:
             return next(iter(digests))

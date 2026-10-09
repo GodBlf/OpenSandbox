@@ -83,6 +83,27 @@ def test_docker_same_digest_across_repositories_is_unambiguous():
     )
 
 
+@pytest.mark.parametrize(
+    "identity", [None, {}, {"Pull": []}, {"Pull": [{"Repository": "other/app"}]}]
+)
+def test_docker_containerd_local_descriptors_are_not_registry_pull_evidence(identity):
+    container = _container(["python@" + DIGEST])
+    container.image.attrs["Identity"] = identity
+    assert docker_image_digest(container) is None
+
+
+def test_docker_containerd_requires_matching_pull_repository():
+    container = _container(["python@" + DIGEST])
+    container.image.attrs["Identity"] = {"Pull": [{"Repository": "docker.io/library/python"}]}
+    assert docker_image_digest(container) == DIGEST
+
+
+def test_docker_containerd_descriptor_without_pull_identity_is_unknown():
+    container = _container(["python@" + DIGEST])
+    container.image.attrs["Descriptor"] = {"digest": DIGEST}
+    assert docker_image_digest(container) is None
+
+
 def _workload():
     return {
         "metadata": {

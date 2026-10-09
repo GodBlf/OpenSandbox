@@ -9,6 +9,8 @@ Lifecycle create, get, and list responses can include `resolvedImageDigest`, ind
 
 Docker reads the container's image `RepoDigests`. Kubernetes reads the primary container's registry-qualified `imageID` from the current workload-owned Pod. Neither path resolves the requested tag again: a mutable tag may have changed since the sandbox started. Docker image/config IDs and bare Kubernetes runtime hashes are not registry digest evidence.
 
+Containerd-backed Docker can synthesize `RepoDigests` for local builds. When image descriptor or identity metadata is present, the server also requires a matching `Identity.Pull` repository; a local descriptor without registry pull provenance returns no value. Older Docker image stores without those metadata fields continue to use `RepoDigests`.
+
 ::: info Index versus platform manifest
 The runtime-recorded digest may identify a multi-platform image index or a platform-specific manifest. This field does not guarantee platform-manifest identity. It also does not attest to the current filesystem contents, which commands can modify after creation.
 :::
