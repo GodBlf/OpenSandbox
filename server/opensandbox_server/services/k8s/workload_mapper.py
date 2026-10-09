@@ -27,6 +27,7 @@ from opensandbox_server.api.schema import (
 )
 from opensandbox_server.extensions import extract_extensions_from_mapping
 from opensandbox_server.services.constants import SANDBOX_ID_LABEL, SANDBOX_SNAPSHOT_ID_LABEL
+from opensandbox_server.services.k8s.image_identity import workload_image_digest
 
 
 def _is_opensandbox_label(label_key: str) -> bool:
@@ -90,6 +91,7 @@ def _build_sandbox_from_workload(workload: Any, workload_provider: Any) -> Sandb
         metadata=user_metadata if user_metadata else None,
         extensions=extract_extensions_from_mapping(annotations),
         image=image_spec,
+        resolved_image_digest=workload_image_digest(workload, workload_provider),
         snapshotId=snapshot_id,
         entrypoint=entrypoint,
         platform=platform_spec,

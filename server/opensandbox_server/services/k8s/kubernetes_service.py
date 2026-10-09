@@ -73,6 +73,7 @@ from opensandbox_server.services.k8s.status_helpers import (
     _is_unschedulable_status,
     _normalize_create_status,
 )
+from opensandbox_server.services.k8s.image_identity import workload_image_digest
 from opensandbox_server.services.k8s.workload_mapper import (
     _build_sandbox_from_workload,
     _extract_platform_from_workload,
@@ -1209,6 +1210,9 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
 
                 response = CreateSandboxResponse(
                     id=sandbox_id,
+                    resolved_image_digest=await asyncio.to_thread(
+                        workload_image_digest, workload, self.workload_provider
+                    ),
                     status=SandboxStatus(
                         state=status_info["state"],
                         reason=status_info["reason"],
