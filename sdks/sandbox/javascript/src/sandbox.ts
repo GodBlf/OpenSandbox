@@ -456,6 +456,17 @@ export class Sandbox {
     }
   >();
 
+  /**
+   * Return an independent filesystem client using explicit Linux credentials.
+   * Requires identity-aware Execd; unsupported servers never trigger fallback.
+   */
+  filesWithIdentity(uid: number, gid: number): SandboxFiles {
+    if (typeof this.files.withIdentity !== "function") {
+      throw new Error("The selected filesystem adapter does not support execution identity");
+    }
+    return this.files.withIdentity(uid, gid);
+  }
+
   private constructor(opts: {
     id: SandboxId;
     connectionConfig: ConnectionConfig;
